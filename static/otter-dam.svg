@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <linearGradient id="otterFurDam" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#9a673d"/>
+      <stop offset="100%" stop-color="#613b1c"/>
+    </linearGradient>
+    <linearGradient id="woodLog" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#a16207"/>
+      <stop offset="50%" stop-color="#ca8a04"/>
+      <stop offset="100%" stop-color="#854d0e"/>
+    </linearGradient>
+    <linearGradient id="waterFlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#bae6fd"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <!-- Background Badge -->
+  <circle cx="50" cy="50" r="46" fill="#f0fdf4" stroke="#86efac" stroke-width="2.5"/>
+
+  <!-- River Water Base -->
+  <path d="M 12 70 Q 30 64 50 70 Q 70 76 88 70 L 88 88 Q 50 96 12 88 Z" fill="url(#waterFlow)" opacity="0.6"/>
+
+  <!-- Sturdy Wooden Logs Base (The Dam) -->
+  <g id="logs">
+    <rect x="18" y="72" width="64" height="10" rx="5" fill="url(#woodLog)" stroke="#451a03" stroke-width="1.5"/>
+    <circle cx="23" cy="77" r="3.5" fill="#fef08a" stroke="#451a03" stroke-width="1"/>
+    <circle cx="23" cy="77" r="1.5" fill="#ca8a04"/>
+
+    <rect x="24" y="64" width="52" height="10" rx="5" fill="url(#woodLog)" stroke="#451a03" stroke-width="1.5"/>
+    <circle cx="71" cy="69" r="3.5" fill="#fef08a" stroke="#451a03" stroke-width="1"/>
+    <circle cx="71" cy="69" r="1.5" fill="#ca8a04"/>
+  </g>
+
+  <!-- Otter Behind Logs -->
+  <!-- Ears -->
+  <circle cx="32" cy="26" r="8" fill="url(#otterFurDam)" stroke="#4a2a11" stroke-width="1.5"/>
+  <circle cx="32" cy="26" r="4" fill="#fbcfe8"/>
+  <circle cx="68" cy="26" r="8" fill="url(#otterFurDam)" stroke="#4a2a11" stroke-width="1.5"/>
+  <circle cx="68" cy="26" r="4" fill="#fbcfe8"/>
+
+  <!-- Head -->
+  <ellipse cx="50" cy="42" rx="25" ry="22" fill="url(#otterFurDam)" stroke="#4a2a11" stroke-width="2"/>
+  
+  <!-- Muzzle -->
+  <ellipse cx="50" cy="49" rx="16" ry="12" fill="#fff8ed" stroke="#4a2a11" stroke-width="1.5"/>
+  <circle cx="37" cy="48" r="4.5" fill="#fca5a5" opacity="0.6"/>
+  <circle cx="63" cy="48" r="4.5" fill="#fca5a5" opacity="0.6"/>
+
+  <!-- Wink / Happy Eyes -->
+  <circle cx="41" cy="40" r="3" fill="#1e293b"/>
+  <circle cx="42" cy="39" r="1" fill="#ffffff"/>
+  <path d="M 56 40 Q 61 36 65 41" fill="none" stroke="#1e293b" stroke-width="2.2" stroke-linecap="round"/>
+
+  <!-- Nose & Grin -->
+  <ellipse cx="50" cy="46" rx="3.5" ry="2.5" fill="#1e293b"/>
+  <path d="M 47 50 Q 50 54 53 50" fill="none" stroke="#1e293b" stroke-width="1.5" stroke-linecap="round"/>
+
+  <!-- Little Paws resting on the top log -->
+  <circle cx="34" cy="65" r="5.5" fill="url(#otterFurDam)" stroke="#4a2a11" stroke-width="1.5"/>
+  <circle cx="66" cy="65" r="5.5" fill="url(#otterFurDam)" stroke="#4a2a11" stroke-width="1.5"/>
+</svg>

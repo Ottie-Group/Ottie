@@ -1,0 +1,260 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings - Ottie</title>
+  <link rel="icon" type="image/svg+xml" href="/static/ottie.svg">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    :root {
+      --bg-page: #f6faf5; --grid-line: #e5ede3; --primary: #059669; --primary-hover: #047857;
+      --primary-light: #ecfdf5; --primary-border: #a7f3d0; --card-bg: #ffffff; --card-border: #e2e8f0;
+      --text-dark: #0f172a; --text-muted: #475569; --text-dim: #94a3b8;
+      --radius-sm: 12px; --radius-md: 18px; --radius-lg: 24px; --radius-pill: 9999px;
+      --shadow-sm: 0 2px 4px rgba(15,23,42,0.04); --shadow-card: 0 4px 20px -2px rgba(15,23,42,0.06);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background-color: var(--bg-page); background-image: linear-gradient(var(--grid-line) 1.2px, transparent 1.2px), linear-gradient(90deg, var(--grid-line) 1.2px, transparent 1.2px); background-size: 32px 32px; color: var(--text-dark); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 32px 16px 80px; }
+    .app-wrapper { width: 100%; max-width: 540px; margin: 0 auto; }
+    .brand-header { text-align: center; margin-bottom: 20px; }
+    .brand-title { font-size: 36px; font-weight: 800; color: var(--primary); display: inline-flex; align-items: center; gap: 8px; }
+    .river-wave-accent { display: flex; justify-content: center; align-items: center; margin: 4px auto 0; height: 16px; }
+    .form-card-box { background: var(--card-bg); border: 1.5px solid var(--card-border); border-radius: var(--radius-lg); padding: 24px; box-shadow: var(--shadow-card); margin-bottom: 20px; }
+    .form-group-item { margin-bottom: 16px; text-align: left; }
+    .form-field-label { display: block; font-size: 13px; font-weight: 700; color: var(--text-dark); margin-bottom: 6px; }
+    .form-input-field { width: 100%; padding: 12px 16px; border-radius: var(--radius-sm); background: #f8faf7; border: 1.5px solid var(--card-border); color: var(--text-dark); font-size: 14px; font-family: inherit; outline: none; }
+    .form-input-field:focus { background: #ffffff; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(5,150,105,0.15); }
+    select, .form-select-field { width: 100%; padding: 12px 40px 12px 16px; border-radius: var(--radius-sm); background-color: #f8faf7; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23059669' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; background-size: 16px 16px; border: 1.5px solid var(--card-border); color: var(--text-dark); font-size: 14px; font-family: inherit; font-weight: 600; outline: none; cursor: pointer; -webkit-appearance: none; -moz-appearance: none; appearance: none; }
+    select:hover, .form-select-field:hover { background-color: #ffffff; border-color: #86efac; }
+    select:focus, .form-select-field:focus { background-color: #ffffff; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(5,150,105,0.15); }
+    .custom-select-wrapper { position: relative; width: 100%; user-select: none; font-family: inherit; }
+    .custom-select-trigger { width: 100%; padding: 12px 14px; border-radius: var(--radius-sm); background-color: #f8faf7; border: 1.5px solid var(--card-border); color: var(--text-dark); font-size: 14px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease; box-sizing: border-box; }
+    .custom-select-trigger:hover { background-color: #ffffff; border-color: #86efac; }
+    .custom-select-wrapper.open .custom-select-trigger, .custom-select-trigger:focus { outline: none; background-color: #ffffff; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.15); }
+    .custom-select-arrow { width: 16px; height: 16px; flex-shrink: 0; transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1); display: flex; align-items: center; justify-content: center; }
+    .custom-select-arrow svg { width: 100%; height: 100%; stroke: var(--primary); }
+    .custom-select-wrapper.open .custom-select-arrow { transform: rotate(180deg); }
+    .custom-select-dropdown { position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: #ffffff; border: 1.5px solid #a7f3d0; border-radius: var(--radius-md); box-shadow: 0 12px 30px -4px rgba(5, 150, 105, 0.18), 0 6px 12px -2px rgba(15, 23, 42, 0.08); padding: 6px; z-index: 9999; display: none; max-height: 240px; overflow-y: auto; animation: customSelectFadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1); box-sizing: border-box; }
+    @keyframes customSelectFadeIn { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    .custom-select-wrapper.open .custom-select-dropdown { display: block; }
+    .custom-select-item { padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13.5px; font-weight: 600; color: var(--text-dark); cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: all 0.12s ease; }
+    .custom-select-item:hover, .custom-select-item.focused { background-color: #ecfdf5; color: var(--primary); }
+    .custom-select-item.selected { background-color: #d1fae5; color: #065f46; font-weight: 700; }
+    .custom-select-checkmark { width: 14px; height: 14px; color: var(--primary); font-weight: 800; font-size: 13px; }
+    details { border: 1.5px solid var(--card-border); border-radius: var(--radius-md); background: #fbfdfa; padding: 12px 16px; margin-top: 12px; transition: all 0.2s ease; }
+    details[open] { background: #ffffff; border-color: #86efac; box-shadow: var(--shadow-sm); }
+    summary { font-size: 13.5px; font-weight: 700; color: var(--primary); cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; user-select: none; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: ''; width: 16px; height: 16px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23059669' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-size: contain; transition: transform 0.2s ease; }
+    details[open] summary::after { transform: rotate(180deg); }
+    .btn-pill { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius-pill); font-size: 13px; font-weight: 700; border: none; cursor: pointer; text-decoration: none; }
+    .btn-pill-primary { background: var(--primary); color: #ffffff; width: 100%; padding: 12px; font-size: 14px; }
+    .btn-pill-primary:hover { background: var(--primary-hover); }
+    .btn-pill-outline { background: var(--card-bg); border: 1.5px solid var(--card-border); color: var(--text-dark); }
+    .btn-pill-outline:hover { background: var(--primary-light); }
+    .alert-message { padding: 12px 16px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; margin-bottom: 18px; display: flex; align-items: center; gap: 8px; }
+    .alert-message.error { background: #fee2e2; border: 1px solid #fca5a5; color: #991b1b; }
+    .alert-message.success { background: #dcfce7; border: 1px solid #86efac; color: #14532d; }
+    .recovery-key-pill { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 18px; font-weight: 800; letter-spacing: 2px; color: var(--primary); background: #f0fdf4; border: 2px dashed var(--primary-border); padding: 12px 16px; border-radius: var(--radius-md); text-align: center; margin: 12px 0; user-select: all; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+<div class="app-wrapper">
+  <!-- Brand Header -->
+  <div class="brand-header">
+    <div class="brand-title">
+      <span>Ottie</span>
+      <img src="/static/ottie.svg" width="40" height="40" alt="Ottie">
+    </div>
+    <div class="river-wave-accent">
+      <svg width="84" height="16" viewBox="0 0 84 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4 5C10 1 16 9 22 5C28 1 34 9 40 5C46 1 52 9 58 5C64 1 70 9 76 5C79 3 81 4 82 5" stroke="#059669" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M12 12C18 8 24 16 30 12C36 8 42 16 48 12C54 8 60 16 66 12C70 9 72 10.5 74 12" stroke="#86efac" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    </div>
+  </div>
+
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+    <h2 style="font-size: 20px; font-weight: 800;">Account & Den Settings</h2>
+    <a href="/" class="btn-pill btn-pill-outline" style="display: inline-flex; align-items: center; gap: 6px;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 12H5"></path>
+        <path d="m12 19-7-7 7-7"></path>
+      </svg>
+      Back to Den
+    </a>
+  </div>
+
+  {{if .Error}}
+    <div class="alert-message error">
+      <span>{{.Error}}</span>
+    </div>
+  {{end}}
+
+  {{if .Success}}
+    <div class="alert-message success">
+      <span>{{.Success}}</span>
+    </div>
+  {{end}}
+
+  <!-- 1. Cryptographic Recovery Phrase Section -->
+  <div class="form-card-box">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+      <h3 style="font-size: 16px; font-weight: 800;">12-Pebble Emergency Dam</h3>
+      {{if .RecoveryKeyActive}}
+        <span style="font-size: 11px; font-weight: 700; background: #dcfce7; color: #15803d; padding: 3px 8px; border-radius: var(--radius-pill);">Active</span>
+      {{else}}
+        <span style="font-size: 11px; font-weight: 700; background: #fee2e2; color: #991b1b; padding: 3px 8px; border-radius: var(--radius-pill);">Not Set</span>
+      {{end}}
+    </div>
+    <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">
+      Zero-knowledge recovery phrase to reconstruct your river den if you ever lose your credentials.
+    </p>
+
+    {{if .NewRecoveryPhrase}}
+      <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-radius: var(--radius-md); padding: 16px; text-align: center; margin-bottom: 16px;">
+        <div style="font-size: 12px; font-weight: 700; color: #166534; margin-bottom: 8px;">Your New 12-Pebble Recovery Phrase:</div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 12px; text-align: left;">
+          {{range $i, $w := .Words}}
+            <div style="background: #ffffff; border: 1px solid #86efac; border-radius: 8px; padding: 6px 8px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-weight: 700;">
+              <span style="color: #94a3b8; font-size: 10px;">{{add $i 1}}.</span> <span style="color: var(--primary);">{{$w}}</span>
+            </div>
+          {{end}}
+        </div>
+        <div style="display: flex; gap: 8px; justify-content: center;">
+          <button type="button" class="btn-pill btn-pill-outline" onclick="copyToClipboard('{{.NewRecoveryPhrase}}', '12-Pebble Recovery Phrase')">Copy Pebbles</button>
+          <button type="button" class="btn-pill btn-pill-outline" onclick="downloadRecoveryPhrase('{{.User.Username}}', '{{.NewRecoveryPhrase}}')">Download .txt</button>
+        </div>
+      </div>
+    {{end}}
+
+    <details style="margin-top: 8px;">
+      <summary style="font-size: 13px; font-weight: 700; color: var(--primary); cursor: pointer;">
+        Regenerate 12-Pebble Emergency Phrase
+      </summary>
+      <form method="post" action="/settings/recovery/regenerate" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--card-border);" onsubmit="return confirm('Regenerating will invalidate your old recovery phrase. Continue?');">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <div class="form-group-item">
+          <label class="form-field-label" for="regen_pw">Confirm Master Den Key</label>
+          <input type="password" id="regen_pw" name="password" class="form-input-field" required placeholder="Your master key">
+        </div>
+        <button type="submit" class="btn-pill btn-pill-primary" style="padding: 10px;">
+          Generate New 12-Pebble Phrase
+        </button>
+      </form>
+    </details>
+  </div>
+
+  <!-- 2. Optional Email / SMS OTP Login Verification -->
+  <div class="form-card-box">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+      <h3 style="font-size: 16px; font-weight: 800;">Den Gate Verification (Email / SMS)</h3>
+      {{if eq .OTPMethod "email"}}
+        <span style="font-size: 11px; font-weight: 700; background: #dcfce7; color: #15803d; padding: 3px 8px; border-radius: var(--radius-pill);">Email Active</span>
+      {{else if eq .OTPMethod "sms"}}
+        <span style="font-size: 11px; font-weight: 700; background: #dcfce7; color: #15803d; padding: 3px 8px; border-radius: var(--radius-pill);">SMS Active</span>
+      {{else}}
+        <span style="font-size: 11px; font-weight: 700; background: #f1f5f9; color: #475569; padding: 3px 8px; border-radius: var(--radius-pill);">Disabled</span>
+      {{end}}
+    </div>
+    <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+      Optionally receive a 6-digit one-time code on login. No third-party authenticator apps required.
+    </p>
+
+    <form method="post" action="/settings/otp">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+
+      <div class="form-group-item">
+        <label class="form-field-label" for="otp_method">Verification Method</label>
+        <select id="otp_method" name="otp_method" class="form-select-field">
+          <option value="none" {{if eq .OTPMethod "none"}}selected{{end}}>None (Master Password only)</option>
+          <option value="email" {{if eq .OTPMethod "email"}}selected{{end}}>Email OTP (Gmail / SMTP)</option>
+          <option value="sms" {{if eq .OTPMethod "sms"}}selected{{end}}>SMS OTP</option>
+        </select>
+      </div>
+
+      <div class="form-group-item">
+        <label class="form-field-label" for="email">Email Address</label>
+        <input type="email" id="email" name="email" class="form-input-field" value="{{.Email}}" placeholder="you@gmail.com">
+        <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Used for Email OTP login passcodes.</div>
+      </div>
+
+      <div class="form-group-item">
+        <label class="form-field-label" for="phone">Phone Number (Optional for SMS)</label>
+        <input type="tel" id="phone" name="phone" class="form-input-field" value="{{.Phone}}" placeholder="+1 (555) 000-0000">
+      </div>
+
+      <button type="submit" class="btn-pill btn-pill-primary">
+        Save Verification Settings
+      </button>
+    </form>
+  </div>
+
+  <!-- 3. Password Change Box -->
+  <div class="form-card-box">
+    <h3 style="font-size: 16px; font-weight: 800; margin-bottom: 4px;">Change Master Password</h3>
+    <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+      Re-encrypts your zero-knowledge private key with your new password.
+    </p>
+
+    <form method="post" action="/settings/password">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+
+      <div class="form-group-item">
+        <label class="form-field-label" for="current_password">Current Password</label>
+        <input type="password" id="current_password" name="current_password" class="form-input-field" required autocomplete="current-password">
+      </div>
+
+      <div class="form-group-item">
+        <label class="form-field-label" for="new_password">New Password</label>
+        <input type="password" id="new_password" name="new_password" class="form-input-field" required placeholder="Minimum 8 characters" autocomplete="new-password">
+      </div>
+
+      <div class="form-group-item">
+        <label class="form-field-label" for="confirm_password">Confirm New Password</label>
+        <input type="password" id="confirm_password" name="confirm_password" class="form-input-field" required autocomplete="new-password">
+      </div>
+
+      <button type="submit" class="btn-pill btn-pill-primary">
+        Update Password
+      </button>
+    </form>
+  </div>
+
+  <!-- 4. Vault Export Box -->
+  <div class="form-card-box">
+    <h3 style="font-size: 16px; font-weight: 800; margin-bottom: 4px;">Export Vault Backup</h3>
+    <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+      Download a decrypted JSON backup file containing all your TOTP secrets and URIs.
+    </p>
+
+    <form method="post" action="/settings/export">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button type="submit" class="btn-pill btn-pill-outline" style="width: 100%; padding: 12px;">
+        Download JSON Backup
+      </button>
+    </form>
+  </div>
+</div>
+
+<div id="toast-container" class="toast-container"></div>
+<script src="/static/app.js"></script>
+<script>
+function downloadRecoveryPhrase(username, phrase) {
+  const content = `========================================\nOTTIE 12-WORD CRYPTOGRAPHIC RECOVERY PHRASE\n========================================\nUsername: ${username}\nCreated: ${new Date().toISOString()}\n\nRECOVERY SEED PHRASE:\n${phrase}\n\nKeep this secret and safe. It can be used to recover access to your Ottie 2FA vault.\n========================================`;
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ottie-recovery-phrase-${username}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('Recovery phrase downloaded!');
+}
+</script>
+</body>
+</html>
