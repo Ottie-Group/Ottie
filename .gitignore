@@ -1,4 +1,4 @@
-# Binaries and executables
+# Go Binaries & Build Output
 *.exe
 *.exe~
 *.dll
@@ -11,13 +11,25 @@ bin/
 out/
 build/
 
-# Test binaries
+# Go Test Artifacts
 *.test
 test-*
 *.out
 *.prof
 
-# Database and persistent storage
+# Frontend React
+node_modules/
+frontend/node_modules/
+.npm/
+.bun/
+.vite/
+*.tsbuildinfo
+.eslintcache
+coverage/
+playwright-report/
+test-results/
+
+# Temporary Data
 data/
 *.db
 *.db-journal
@@ -26,7 +38,7 @@ data/
 *.sqlite
 *.sqlite3
 
-# Environment and sensitive secrets
+# Environment Variables
 .env
 .env.local
 .env.*.local
@@ -34,7 +46,7 @@ data/
 *.key
 *.crt
 
-# IDE and Editor configs
+# IDE & Editor Files
 .idea/
 .vscode/*
 !.vscode/tasks.json
@@ -42,7 +54,7 @@ data/
 *.sublime-project
 *.sublime-workspace
 
-# Operating System files
+# Operating System & Temporary Files
 .DS_Store
 .DS_Store?
 ._*
@@ -51,8 +63,6 @@ data/
 ehthumbs.db
 Thumbs.db
 [Dd]esktop.ini
-
-# Logs and temporary files
 *.log
 *.tmp
 *.bak
