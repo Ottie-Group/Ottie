@@ -11,6 +11,18 @@ services:
       OTTIE_INSECURE_COOKIES: ${OTTIE_INSECURE_COOKIES:-}
       OTTIE_LISTEN_ADDR: 0.0.0.0:8080
       OTTIE_DB_PATH: /app/data/ottie.db
+
+      # Optional 2FA Email (SMTP)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+
+      # Optional 2FA Text/Phone (SMS)
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
     volumes:
       - ottie_data:/app/data
 
