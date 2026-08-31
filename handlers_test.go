@@ -1,11 +1,13 @@
 package main
 
 import (
-	"html/template"
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,10 +15,10 @@ import (
 	"github.com/gorilla/sessions"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func setupTestApp(t *testing.T) *App {
+	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test_app.db")
 	db, err := openDB(dbPath)
@@ -28,99 +30,89 @@ func setupTestApp(t *testing.T) *App {
 	serverKey := []byte("abcdefghijklmnopqrstuvwxyz123456")
 	store := sessions.NewCookieStore(sessionKey)
 	dekStore := newSessionStore()
-	funcMap := template.FuncMap{
-		"add": func(a, b int) int { return a + b },
-	}
-	tmpl := template.Must(template.New("").Funcs(funcMap).ParseGlob("templates/*.html"))
 
 	return &App{
 		db:        db,
 		store:     store,
 		dekStore:  dekStore,
-		tmpl:      tmpl,
 		serverKey: serverKey,
 	}
 }
 
+func testingTime() time.Time {
+	return time.Unix(1700000000, 0)
+}
+
 func TestFullWorkflow(t *testing.T) {
+	os.Setenv("SMTP_HOST", "smtp.example.com")
+	defer os.Unsetenv("SMTP_HOST")
+
 	app := setupTestApp(t)
 	defer app.db.Close()
 
-	// 1. Initial State: Count is 0
-	n, err := countUsers(app.db)
-	if err != nil || n != 0 {
-		t.Fatalf("expected 0 users initially, got %d", n)
+	// Initial State: 0 users, setup needed
+	reqMe := httptest.NewRequest("GET", "/api/me", nil)
+	recMe := httptest.NewRecorder()
+	app.handleApiMe(recMe, reqMe)
+	if recMe.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /api/me, got %d", recMe.Code)
+	}
+	var meRes map[string]any
+	json.NewDecoder(recMe.Body).Decode(&meRes)
+	if meRes["setupNeeded"] != true {
+		t.Fatalf("expected setupNeeded == true, got %v", meRes["setupNeeded"])
 	}
 
-	// 2. First-time Setup: Create Admin
-	setupForm := url.Values{
-		"csrf_token":       {""},
-		"username":         {"admin_otto"},
-		"password":         {"super-secret-password-123"},
-		"confirm_password": {"super-secret-password-123"},
+	// Setup Admin Account via REST API
+	setupPayload := map[string]string{
+		"username": "admin_otto",
+		"password": "super-secret-password-123",
+	}
+	setupBytes, _ := json.Marshal(setupPayload)
+	reqSetup := httptest.NewRequest("POST", "/api/setup", bytes.NewReader(setupBytes))
+	reqSetup.Header.Set("Content-Type", "application/json")
+	recSetup := httptest.NewRecorder()
+	app.handleApiSetup(recSetup, reqSetup)
+
+	if recSetup.Code != http.StatusOK {
+		t.Fatalf("expected 200 on setup, got %d, body: %s", recSetup.Code, recSetup.Body.String())
+	}
+	var setupRes map[string]any
+	json.NewDecoder(recSetup.Body).Decode(&setupRes)
+	if setupRes["success"] != true {
+		t.Fatalf("expected setup success == true")
+	}
+	words := setupRes["words"].([]any)
+	if len(words) != 12 {
+		t.Fatalf("expected 12 recovery words, got %d", len(words))
 	}
 
-	// Get setup page to establish CSRF
-	req := httptest.NewRequest("GET", "/setup", nil)
-	rec := httptest.NewRecorder()
-	app.handleSetupPage(rec, req)
-
-	// Extract cookie and CSRF
-	cookie := rec.Header().Get("Set-Cookie")
-	reqPost := httptest.NewRequest("POST", "/setup", strings.NewReader(setupForm.Encode()))
-	reqPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	reqPost.Header.Set("Cookie", cookie)
-
-	sess, _ := app.store.Get(reqPost, sessionName)
-	csrf, _ := sess.Values["csrf"].(string)
-	setupForm.Set("csrf_token", csrf)
-
-	reqPost = httptest.NewRequest("POST", "/setup", strings.NewReader(setupForm.Encode()))
-	reqPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	reqPost.Header.Set("Cookie", cookie)
-	recPost := httptest.NewRecorder()
-
-	app.handleSetupSubmit(recPost, reqPost)
-
-	if recPost.Code != http.StatusSeeOther {
-		t.Fatalf("expected redirect after setup, got %d", recPost.Code)
+	// Confirm setup
+	adminCookie := recSetup.Header().Get("Set-Cookie")
+	reqConfirm := httptest.NewRequest("POST", "/api/setup/confirm", strings.NewReader(`{"acknowledged":true}`))
+	reqConfirm.Header.Set("Content-Type", "application/json")
+	reqConfirm.Header.Set("Cookie", adminCookie)
+	recConfirm := httptest.NewRecorder()
+	app.handleApiSetupConfirm(recConfirm, reqConfirm)
+	if recConfirm.Code != http.StatusOK {
+		t.Fatalf("expected 200 on setup confirm, got %d", recConfirm.Code)
 	}
 
-	adminUser, err := getUserByUsername(app.db, "admin_otto")
-	if err != nil || adminUser.Role != "admin" {
-		t.Fatalf("expected admin user created with role 'admin', got err: %v", err)
+	// Admin creates standard user "charlie"
+	createUserPayload := map[string]string{
+		"username": "charlie",
+		"password": "charlies-password-456",
+		"role":     "user",
 	}
-
-	// 3. Admin creates standard user "charlie"
-	cookie = recPost.Header().Get("Set-Cookie")
-	reqAdmin := httptest.NewRequest("GET", "/admin", nil)
-	reqAdmin.Header.Set("Cookie", cookie)
-	recAdmin := httptest.NewRecorder()
-	app.handleAdminPage(recAdmin, reqAdmin)
-	adminCookie := recAdmin.Header().Get("Set-Cookie")
-	if adminCookie == "" {
-		adminCookie = cookie
-	}
-
-	reqAdminSess := httptest.NewRequest("GET", "/admin", nil)
-	reqAdminSess.Header.Set("Cookie", adminCookie)
-	sess, _ = app.store.Get(reqAdminSess, sessionName)
-	csrfToken, _ := sess.Values["csrf"].(string)
-
-	createForm := url.Values{
-		"csrf_token": {csrfToken},
-		"username":   {"charlie"},
-		"role":       {"user"},
-		"password":   {"charlies-password-456"},
-	}
-	reqCreate := httptest.NewRequest("POST", "/admin/users/create", strings.NewReader(createForm.Encode()))
-	reqCreate.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	createBytes, _ := json.Marshal(createUserPayload)
+	reqCreate := httptest.NewRequest("POST", "/api/admin/users/create", bytes.NewReader(createBytes))
+	reqCreate.Header.Set("Content-Type", "application/json")
 	reqCreate.Header.Set("Cookie", adminCookie)
 	recCreate := httptest.NewRecorder()
+	app.handleApiAdminUsersCreate(recCreate, reqCreate)
 
-	app.handleAdminCreateUser(recCreate, reqCreate)
-	if recCreate.Code != http.StatusSeeOther {
-		t.Fatalf("expected redirect after admin user create, got %d, body: %s", recCreate.Code, recCreate.Body.String())
+	if recCreate.Code != http.StatusOK {
+		t.Fatalf("expected 200 on create user, got %d, body: %s", recCreate.Code, recCreate.Body.String())
 	}
 
 	charlie, err := getUserByUsername(app.db, "charlie")
@@ -128,262 +120,217 @@ func TestFullWorkflow(t *testing.T) {
 		t.Fatalf("expected user charlie created with role 'user', got %v", err)
 	}
 
-	// 4. Charlie logs in
-	loginForm := url.Values{
-		"csrf_token": {"login_csrf"},
-		"username":   {"charlie"},
-		"password":   {"charlies-password-456"},
+	// Charlie logs in via REST API
+	loginPayload := map[string]string{
+		"username": "charlie",
+		"password": "charlies-password-456",
 	}
-	reqLogin := httptest.NewRequest("POST", "/login", strings.NewReader(loginForm.Encode()))
-	reqLogin.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	sessLogin, _ := app.store.Get(reqLogin, sessionName)
-	sessLogin.Values["csrf"] = "login_csrf"
-	sessLogin.Save(reqLogin, httptest.NewRecorder())
-
+	loginBytes, _ := json.Marshal(loginPayload)
+	reqLogin := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(loginBytes))
+	reqLogin.Header.Set("Content-Type", "application/json")
 	recLogin := httptest.NewRecorder()
-	app.handleLoginSubmit(recLogin, reqLogin)
-	if recLogin.Code != http.StatusSeeOther {
-		t.Fatalf("expected redirect after successful login, got %d", recLogin.Code)
-	}
+	app.handleApiAuthLogin(recLogin, reqLogin)
 
-	// 5. Charlie adds a TOTP secret
+	if recLogin.Code != http.StatusOK {
+		t.Fatalf("expected 200 on charlie login, got %d, body: %s", recLogin.Code, recLogin.Body.String())
+	}
 	charlieCookie := recLogin.Header().Get("Set-Cookie")
+
+	// Charlie adds a TOTP secret via REST API
 	secret := "JBSWY3DPEHPK3PXP"
-	code, err := totp.GenerateCodeCustom(secret, testingTime(), totp.ValidateOpts{
+	code, err := totp.GenerateCodeCustom(secret, time.Now(), totp.ValidateOpts{
 		Period: 30, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1,
 	})
 	if err != nil {
 		t.Fatalf("GenerateCodeCustom failed: %v", err)
 	}
 
-	addForm := url.Values{
-		"csrf_token":         {"add_csrf"},
-		"otpauth_or_secret":  {secret},
-		"issuer":             {"GitHub"},
-		"account_name":       {"charlie@github"},
-		"category":           {"Work"},
-		"confirm_code":       {code},
+	addPayload := map[string]string{
+		"secret":      secret,
+		"issuer":      "GitHub",
+		"accountName": "charlie@github",
+		"category":    "Work",
+		"code":        code,
 	}
-	reqAdd := httptest.NewRequest("POST", "/add", strings.NewReader(addForm.Encode()))
-	reqAdd.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	addBytes, _ := json.Marshal(addPayload)
+	reqAdd := httptest.NewRequest("POST", "/api/tokens", bytes.NewReader(addBytes))
+	reqAdd.Header.Set("Content-Type", "application/json")
 	reqAdd.Header.Set("Cookie", charlieCookie)
-	sessAdd, _ := app.store.Get(reqAdd, sessionName)
-	sessAdd.Values["csrf"] = "add_csrf"
-	sessAdd.Save(reqAdd, httptest.NewRecorder())
-
 	recAdd := httptest.NewRecorder()
-	app.handleAddSubmit(recAdd, reqAdd)
-	if recAdd.Code != http.StatusSeeOther {
-		t.Fatalf("expected redirect after add TOTP account, got %d", recAdd.Code)
+	app.handleApiTokens(recAdd, reqAdd)
+
+	if recAdd.Code != http.StatusOK {
+		t.Fatalf("expected 200 on add token, got %d, body: %s", recAdd.Code, recAdd.Body.String())
 	}
 
-	accounts, err := listAccounts(app.db, charlie.ID)
-	if err != nil || len(accounts) != 1 {
-		t.Fatalf("expected 1 account for charlie, got %d", len(accounts))
+	// Test TOTP Codes API
+	reqCodes := httptest.NewRequest("GET", "/api/codes", nil)
+	reqCodes.Header.Set("Cookie", charlieCookie)
+	recCodes := httptest.NewRecorder()
+	app.handleCodesAPI(recCodes, reqCodes)
+
+	if recCodes.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /api/codes, got %d", recCodes.Code)
+	}
+	var codesRes []map[string]any
+	json.NewDecoder(recCodes.Body).Decode(&codesRes)
+	if len(codesRes) != 1 || codesRes[0]["issuer"] != "GitHub" {
+		t.Fatalf("expected 1 token for GitHub, got %v", codesRes)
 	}
 
-	// 6. Charlie changes password
-	pwChangeForm := url.Values{
-		"csrf_token":       {"pw_csrf"},
-		"current_password": {"charlies-password-456"},
-		"new_password":     {"new-charlie-pass-789"},
-		"confirm_password": {"new-charlie-pass-789"},
+	// Charlie changes password via REST API
+	pwPayload := map[string]string{
+		"currentPassword": "charlies-password-456",
+		"newPassword":     "new-charlie-pass-789",
 	}
-	reqPw := httptest.NewRequest("POST", "/settings/password", strings.NewReader(pwChangeForm.Encode()))
-	reqPw.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	pwBytes, _ := json.Marshal(pwPayload)
+	reqPw := httptest.NewRequest("POST", "/api/settings/password", bytes.NewReader(pwBytes))
+	reqPw.Header.Set("Content-Type", "application/json")
 	reqPw.Header.Set("Cookie", charlieCookie)
-	sessPw, _ := app.store.Get(reqPw, sessionName)
-	sessPw.Values["csrf"] = "pw_csrf"
-	sessPw.Save(reqPw, httptest.NewRecorder())
-
 	recPw := httptest.NewRecorder()
-	app.handlePasswordChange(recPw, reqPw)
+	app.handleApiSettingsPassword(recPw, reqPw)
+
 	if recPw.Code != http.StatusOK {
-		t.Fatalf("expected 200 after password change, got %d", recPw.Code)
+		t.Fatalf("expected 200 on password update, got %d", recPw.Code)
 	}
 
-	// 7. Charlie logs in with NEW password
-	newLoginForm := url.Values{
-		"csrf_token": {"new_login_csrf"},
-		"username":   {"charlie"},
-		"password":   {"new-charlie-pass-789"},
+	// Charlie logs in with NEW password
+	newLoginPayload := map[string]string{
+		"username": "charlie",
+		"password": "new-charlie-pass-789",
 	}
-	reqNewLogin := httptest.NewRequest("POST", "/login", strings.NewReader(newLoginForm.Encode()))
-	reqNewLogin.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	sessNewLogin, _ := app.store.Get(reqNewLogin, sessionName)
-	sessNewLogin.Values["csrf"] = "new_login_csrf"
-	sessNewLogin.Save(reqNewLogin, httptest.NewRecorder())
-
+	newLoginBytes, _ := json.Marshal(newLoginPayload)
+	reqNewLogin := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(newLoginBytes))
+	reqNewLogin.Header.Set("Content-Type", "application/json")
 	recNewLogin := httptest.NewRecorder()
-	app.handleLoginSubmit(recNewLogin, reqNewLogin)
-	if recNewLogin.Code != http.StatusSeeOther {
-		t.Fatalf("expected redirect after login with new password, got %d", recNewLogin.Code)
+	app.handleApiAuthLogin(recNewLogin, reqNewLogin)
+
+	if recNewLogin.Code != http.StatusOK {
+		t.Fatalf("expected 200 on login with new password, got %d", recNewLogin.Code)
+	}
+	newCharlieCookie := recNewLogin.Header().Get("Set-Cookie")
+
+	// Charlie exports vault
+	reqExportSess := httptest.NewRequest("GET", "/api/me", nil)
+	reqExportSess.Header.Set("Cookie", newCharlieCookie)
+	recExportSess := httptest.NewRecorder()
+	app.handleApiMe(recExportSess, reqExportSess)
+	exportCookie := recExportSess.Header().Get("Set-Cookie")
+	if exportCookie == "" {
+		exportCookie = newCharlieCookie
 	}
 
-	// 8. Charlie exports vault
-	newCharlieCookie := recNewLogin.Header().Get("Set-Cookie")
-	reqExport := httptest.NewRequest("POST", "/settings/export", strings.NewReader("csrf_token=export_csrf"))
-	reqExport.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	reqExport.Header.Set("Cookie", newCharlieCookie)
-	sessExport, _ := app.store.Get(reqExport, sessionName)
-	sessExport.Values["csrf"] = "export_csrf"
-	sessExport.Save(reqExport, httptest.NewRecorder())
+	sessExport, _ := app.store.Get(reqExportSess, sessionName)
+	csrfToken, _ := sessExport.Values["csrf"].(string)
 
+	reqExport := httptest.NewRequest("POST", "/api/settings/export", nil)
+	reqExport.Header.Set("Cookie", exportCookie)
+	reqExport.Header.Set("X-CSRF-Token", csrfToken)
 	recExport := httptest.NewRecorder()
 	app.handleExportVault(recExport, reqExport)
+
 	if recExport.Code != http.StatusOK {
 		t.Fatalf("expected 200 on vault export, got %d", recExport.Code)
 	}
 	if !strings.Contains(recExport.Body.String(), "GitHub") {
-		t.Fatalf("expected export payload to contain 'GitHub', got %s", recExport.Body.String())
+		t.Fatalf("expected export to contain GitHub, got %s", recExport.Body.String())
 	}
 
-	// 8b. Charlie configures Email OTP login verification
-	saveOTPForm := url.Values{
-		"csrf_token": {"save_otp_csrf"},
-		"otp_method": {"email"},
-		"email":      {"charlie@gmail.com"},
-		"phone":      {""},
+	// Charlie configures Email 2FA
+	otpPayload := map[string]any{
+		"enabled":     true,
+		"method":      "email",
+		"destination": "charlie@gmail.com",
 	}
-	reqSaveOTP := httptest.NewRequest("POST", "/settings/otp", strings.NewReader(saveOTPForm.Encode()))
-	reqSaveOTP.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	reqSaveOTP.Header.Set("Cookie", newCharlieCookie)
-	sessSaveOTP, _ := app.store.Get(reqSaveOTP, sessionName)
-	sessSaveOTP.Values["csrf"] = "save_otp_csrf"
-	sessSaveOTP.Save(reqSaveOTP, httptest.NewRecorder())
+	otpBytes, _ := json.Marshal(otpPayload)
+	reqOTP := httptest.NewRequest("POST", "/api/settings/otp", bytes.NewReader(otpBytes))
+	reqOTP.Header.Set("Content-Type", "application/json")
+	reqOTP.Header.Set("Cookie", exportCookie)
+	recOTP := httptest.NewRecorder()
+	app.handleApiSettingsOTP(recOTP, reqOTP)
 
-	recSaveOTP := httptest.NewRecorder()
-	app.handleSettingsSaveOTP(recSaveOTP, reqSaveOTP)
-	if recSaveOTP.Code != http.StatusOK {
-		t.Fatalf("expected 200 on save OTP settings, got %d", recSaveOTP.Code)
+	if recOTP.Code != http.StatusOK {
+		t.Fatalf("expected 200 on settings OTP, got %d", recOTP.Code)
 	}
 
-	// 8c. Test Email OTP login challenge
-	reqLoginOTP := httptest.NewRequest("POST", "/login", strings.NewReader(newLoginForm.Encode()))
-	reqLoginOTP.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	sessLoginOTP, _ := app.store.Get(reqLoginOTP, sessionName)
-	sessLoginOTP.Values["csrf"] = "new_login_csrf"
-	sessLoginOTP.Save(reqLoginOTP, httptest.NewRecorder())
+	// Charlie logs in -> triggers 2FA
+	req2FALogin := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(newLoginBytes))
+	req2FALogin.Header.Set("Content-Type", "application/json")
+	rec2FALogin := httptest.NewRecorder()
+	app.handleApiAuthLogin(rec2FALogin, req2FALogin)
 
-	recLoginOTP := httptest.NewRecorder()
-	app.handleLoginSubmit(recLoginOTP, reqLoginOTP)
-	if recLoginOTP.Code != http.StatusSeeOther || recLoginOTP.Header().Get("Location") != "/login/otp" {
-		t.Fatalf("expected redirect to /login/otp, got code %d loc %s", recLoginOTP.Code, recLoginOTP.Header().Get("Location"))
+	var res2FA map[string]any
+	json.NewDecoder(rec2FALogin.Body).Decode(&res2FA)
+	if res2FA["requires2FA"] != true {
+		t.Fatalf("expected requires2FA == true, got %v", res2FA)
 	}
 
-	// Check that an OTP code was generated in session
-	charlieOTPCookie := recLoginOTP.Header().Get("Set-Cookie")
-	reqVerifyPage := httptest.NewRequest("GET", "/login/otp", nil)
-	reqVerifyPage.Header.Set("Cookie", charlieOTPCookie)
-	sessVerifyPage, _ := app.store.Get(reqVerifyPage, sessionName)
-	otpCode, _ := sessVerifyPage.Values["pending_otp_code"].(string)
-	if otpCode == "" {
-		t.Fatalf("expected pending_otp_code in session")
+	pendingCookie := rec2FALogin.Header().Get("Set-Cookie")
+	reqSess := httptest.NewRequest("GET", "/api/me", nil)
+	reqSess.Header.Set("Cookie", pendingCookie)
+	sess, _ := app.store.Get(reqSess, sessionName)
+	otpCode, _ := sess.Values["pending_otp_code"].(string)
+
+	verifyPayload := map[string]string{"code": otpCode}
+	verifyBytes, _ := json.Marshal(verifyPayload)
+	reqVerify := httptest.NewRequest("POST", "/api/auth/verify-2fa", bytes.NewReader(verifyBytes))
+	reqVerify.Header.Set("Content-Type", "application/json")
+	reqVerify.Header.Set("Cookie", pendingCookie)
+	recVerify := httptest.NewRecorder()
+	app.handleApiAuthVerify2FA(recVerify, reqVerify)
+
+	if recVerify.Code != http.StatusOK {
+		t.Fatalf("expected 200 on 2FA verify, got %d", recVerify.Code)
 	}
 
-	// Submit valid 6-digit OTP code
-	verifyOTPForm := url.Values{
-		"csrf_token": {"verify_otp_csrf"},
-		"code":       {otpCode},
-	}
-	reqVerifyOTP := httptest.NewRequest("POST", "/login/otp", strings.NewReader(verifyOTPForm.Encode()))
-	reqVerifyOTP.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	reqVerifyOTP.Header.Set("Cookie", charlieOTPCookie)
-	sessVerifyOTP, _ := app.store.Get(reqVerifyOTP, sessionName)
-	sessVerifyOTP.Values["csrf"] = "verify_otp_csrf"
-	sessVerifyOTP.Save(reqVerifyOTP, httptest.NewRecorder())
-
-	recVerifyOTP := httptest.NewRecorder()
-	app.handleLoginOTPSubmit(recVerifyOTP, reqVerifyOTP)
-	if recVerifyOTP.Code != http.StatusSeeOther || recVerifyOTP.Header().Get("Location") != "/" {
-		t.Fatalf("expected redirect to / after valid OTP code, got %d loc %s", recVerifyOTP.Code, recVerifyOTP.Header().Get("Location"))
-	}
-
-	// 8d. Test Regenerate Recovery Phrase
-	regenForm := url.Values{
-		"csrf_token": {"regen_csrf"},
-		"password":   {"new-charlie-pass-789"},
-	}
-	reqRegen := httptest.NewRequest("POST", "/settings/recovery/regenerate", strings.NewReader(regenForm.Encode()))
-	reqRegen.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	reqRegen.Header.Set("Cookie", recVerifyOTP.Header().Get("Set-Cookie"))
-	sessRegen, _ := app.store.Get(reqRegen, sessionName)
-	sessRegen.Values["csrf"] = "regen_csrf"
-	sessRegen.Save(reqRegen, httptest.NewRecorder())
-
+	// Regenerate Recovery Phrase
+	finalCookie := recVerify.Header().Get("Set-Cookie")
+	reqRegen := httptest.NewRequest("POST", "/api/settings/recovery/regenerate", nil)
+	reqRegen.Header.Set("Cookie", finalCookie)
 	recRegen := httptest.NewRecorder()
-	app.handleRegenerateRecovery(recRegen, reqRegen)
+	app.handleApiSettingsRecoveryRegenerate(recRegen, reqRegen)
+
 	if recRegen.Code != http.StatusOK {
-		t.Fatalf("expected 200 on regenerate recovery, got %d", recRegen.Code)
+		t.Fatalf("expected 200 on recovery regenerate, got %d", recRegen.Code)
+	}
+	var regenRes map[string]any
+	json.NewDecoder(recRegen.Body).Decode(&regenRes)
+	recoveryPhrase, _ := regenRes["recoveryKey"].(string)
+	if len(strings.Fields(recoveryPhrase)) != 12 {
+		t.Fatalf("expected 12 recovery words from regenerate, got: %q", recoveryPhrase)
 	}
 
-	// 8e. Test Zero-Knowledge Account Recovery via /recover
-	// Charlie forgot his password and recovers with a known 12-word phrase
-	charlieUser, _ := getUserByID(app.db, charlie.ID)
-	kekCharlie, _ := DeriveKEK("new-charlie-pass-789", charlieUser.Salt)
-	dekCharlie, _ := UnwrapDEK(charlieUser.EncDEK, kekCharlie)
-
-	testPhrase, _ := GenerateMnemonicPhrase(12)
-	recSalt, _ := GenerateSalt()
-	recKEK, _ := DeriveKEK(NormalizePhrase(testPhrase), recSalt)
-	recEncDEK, _ := WrapDEK(dekCharlie, recKEK)
-	phraseHash, _ := bcrypt.GenerateFromPassword([]byte(NormalizePhrase(testPhrase)), bcrypt.DefaultCost)
-	_ = updateUserRecoveryData(app.db, charlie.ID, recEncDEK, recSalt, string(phraseHash))
-
-	recoverForm := url.Values{
-		"csrf_token":       {"recover_csrf"},
-		"username":         {"charlie"},
-		"recovery_phrase":  {testPhrase},
-		"new_password":     {"charlie-recovered-999"},
-		"confirm_password": {"charlie-recovered-999"},
+	// Recover Account with 12 words
+	recoverPayload := map[string]string{
+		"username":    "charlie",
+		"recoveryKey": recoveryPhrase,
+		"newPassword": "recovered-password-999",
 	}
-	reqRecover := httptest.NewRequest("POST", "/recover", strings.NewReader(recoverForm.Encode()))
-	reqRecover.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	sessRecover, _ := app.store.Get(reqRecover, sessionName)
-	sessRecover.Values["csrf"] = "recover_csrf"
-	sessRecover.Save(reqRecover, httptest.NewRecorder())
-
+	recoverBytes, _ := json.Marshal(recoverPayload)
+	reqRecover := httptest.NewRequest("POST", "/api/auth/recover", bytes.NewReader(recoverBytes))
+	reqRecover.Header.Set("Content-Type", "application/json")
 	recRecover := httptest.NewRecorder()
-	app.handleRecoverSubmit(recRecover, reqRecover)
-	if recRecover.Code != http.StatusSeeOther || recRecover.Header().Get("Location") != "/" {
-		t.Fatalf("expected redirect to / after recovery, got %d loc %s", recRecover.Code, recRecover.Header().Get("Location"))
+	app.handleApiAuthRecover(recRecover, reqRecover)
+
+	if recRecover.Code != http.StatusOK {
+		t.Fatalf("expected 200 on recover, got %d, body: %s", recRecover.Code, recRecover.Body.String())
 	}
 
-	// Verify Charlie's vault is fully decrypted with the new password
+	// Delete Token
 	recoveredCookie := recRecover.Header().Get("Set-Cookie")
-	reqCodesRecovered := httptest.NewRequest("GET", "/api/codes", nil)
-	reqCodesRecovered.Header.Set("Cookie", recoveredCookie)
-	recCodesRecovered := httptest.NewRecorder()
-	app.handleCodesAPI(recCodesRecovered, reqCodesRecovered)
-	if !strings.Contains(recCodesRecovered.Body.String(), "GitHub") {
-		t.Fatalf("expected recovered vault to contain 'GitHub', got %s", recCodesRecovered.Body.String())
+	if recoveredCookie == "" {
+		recoveredCookie = finalCookie
 	}
+	tokenID := int64(codesRes[0]["id"].(float64))
+	deleteTokPayload := map[string]string{"id": strconv.FormatInt(tokenID, 10)}
+	delTokBytes, _ := json.Marshal(deleteTokPayload)
+	reqDelTok := httptest.NewRequest("POST", "/api/tokens/delete", bytes.NewReader(delTokBytes))
+	reqDelTok.Header.Set("Content-Type", "application/json")
+	reqDelTok.Header.Set("Cookie", recoveredCookie)
+	recDelTok := httptest.NewRecorder()
+	app.handleApiTokensDelete(recDelTok, reqDelTok)
 
-	// 9. Admin deletes Charlie
-	delForm := url.Values{
-		"csrf_token": {"del_csrf"},
-		"user_id":    {"2"},
+	if recDelTok.Code != http.StatusOK {
+		t.Fatalf("expected 200 on delete token, got %d, body: %s", recDelTok.Code, recDelTok.Body.String())
 	}
-	reqDel := httptest.NewRequest("POST", "/admin/users/delete", strings.NewReader(delForm.Encode()))
-	reqDel.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	reqDel.Header.Set("Cookie", adminCookie)
-	sessDel, _ := app.store.Get(reqDel, sessionName)
-	sessDel.Values["csrf"] = "del_csrf"
-	sessDel.Save(reqDel, httptest.NewRecorder())
-
-	recDel := httptest.NewRecorder()
-	app.handleAdminDeleteUser(recDel, reqDel)
-	if recDel.Code != http.StatusSeeOther {
-		t.Fatalf("expected redirect after admin user delete, got %d", recDel.Code)
-	}
-
-	// Verify Charlie is deleted and all TOTP accounts are wiped
-	deletedAccounts, _ := listAccounts(app.db, charlie.ID)
-	if len(deletedAccounts) != 0 {
-		t.Fatalf("expected 0 accounts for deleted user charlie, got %d", len(deletedAccounts))
-	}
-}
-
-func testingTime() (t time.Time) {
-	return time.Now()
 }

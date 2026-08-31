@@ -31,7 +31,7 @@ interface AuthState {
   setUser: (user: User | null) => void;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   isAuthenticated: false,
   isLoading: true,
@@ -44,7 +44,6 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   fetchSession: async () => {
     try {
-      set({ isLoading: true });
       const res = await api.get('/api/me');
       if (res.csrfToken) {
         api.setCsrfToken(res.csrfToken);
@@ -77,36 +76,20 @@ export const useAuthStore = create<AuthState>((set) => ({
       return res;
     }
 
-    if (res.user) {
-      set({
-        user: res.user,
-        isAuthenticated: true,
-        setupNeeded: false,
-      });
-    }
+    await get().fetchSession();
     return res;
   },
 
   verify2FA: async (code) => {
     const res = await api.post('/api/auth/verify-2fa', { code });
     if (res.csrfToken) api.setCsrfToken(res.csrfToken);
-    if (res.user) {
-      set({
-        user: res.user,
-        isAuthenticated: true,
-      });
-    }
+    await get().fetchSession();
   },
 
   verifyOTP: async (code) => {
     const res = await api.post('/api/auth/verify-otp', { code });
     if (res.csrfToken) api.setCsrfToken(res.csrfToken);
-    if (res.user) {
-      set({
-        user: res.user,
-        isAuthenticated: true,
-      });
-    }
+    await get().fetchSession();
   },
 
   logout: async () => {

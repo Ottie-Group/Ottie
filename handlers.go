@@ -7,9 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
+	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,7 +58,6 @@ type App struct {
 	db        *sql.DB
 	store     *sessions.CookieStore
 	dekStore  *SessionStore
-	tmpl      *template.Template
 	serverKey []byte
 }
 
@@ -75,6 +75,15 @@ func newCSRFToken() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+func generateNumericOTP() (string, error) {
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	num := (int(b[0])<<16 | int(b[1])<<8 | int(b[2])) % 1000000
+	return fmt.Sprintf("%06d", num), nil
+}
+
 type SessionUser struct {
 	ID       int64
 	Username string
@@ -88,8 +97,21 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 		return nil, errors.New("no session")
 	}
 
-	uid, ok := sess.Values["user_id"].(int64)
-	if !ok || uid == 0 {
+	var uid int64
+	switch v := sess.Values["user_id"].(type) {
+	case int64:
+		uid = v
+	case int:
+		uid = int64(v)
+	case int32:
+		uid = int64(v)
+	case float64:
+		uid = int64(v)
+	case string:
+		uid, _ = strconv.ParseInt(v, 10, 64)
+	}
+
+	if uid == 0 {
 		return nil, errors.New("not logged in")
 	}
 
@@ -128,34 +150,6 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 	return nil, errors.New("session key expired")
 }
 
-func (a *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		userCount, _ := countUsers(a.db)
-		if userCount == 0 {
-			http.Redirect(w, r, "/setup", http.StatusSeeOther)
-			return
-		}
-
-		user, err := a.getSessionUser(r)
-		if err != nil || user == nil {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
-			return
-		}
-		next(w, r)
-	}
-}
-
-func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
-	return a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		user, _ := a.getSessionUser(r)
-		if user == nil || user.Role != "admin" {
-			http.Error(w, "Access forbidden: Admins only", http.StatusForbidden)
-			return
-		}
-		next(w, r)
-	})
-}
-
 func (a *App) checkCSRF(r *http.Request, sess *sessions.Session) bool {
 	want, _ := sess.Values["csrf"].(string)
 	got := r.FormValue("csrf_token")
@@ -163,601 +157,6 @@ func (a *App) checkCSRF(r *http.Request, sess *sessions.Session) bool {
 		got = r.Header.Get("X-CSRF-Token")
 	}
 	return want != "" && got != "" && want == got
-}
-
-// --- First-time On-Ramp / Setup ---
-
-func (a *App) handleSetupPage(w http.ResponseWriter, r *http.Request) {
-	n, _ := countUsers(a.db)
-	if n > 0 {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	sess, _ := a.store.Get(r, sessionName)
-	token := newCSRFToken()
-	sess.Values["csrf"] = token
-	sess.Save(r, w)
-
-	a.tmpl.ExecuteTemplate(w, "setup.html", map[string]any{
-		"CSRF": token,
-	})
-}
-
-func (a *App) handleSetupSubmit(w http.ResponseWriter, r *http.Request) {
-	n, _ := countUsers(a.db)
-	if n > 0 {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form token, please retry", http.StatusForbidden)
-		return
-	}
-
-	username := strings.TrimSpace(r.FormValue("username"))
-	password := r.FormValue("password")
-	confirmPassword := r.FormValue("confirm_password")
-
-	if len(username) < 3 {
-		a.renderSetupError(w, "Username must be at least 3 characters.")
-		return
-	}
-	if len(password) < 8 {
-		a.renderSetupError(w, "Password must be at least 8 characters long.")
-		return
-	}
-	if password != confirmPassword {
-		a.renderSetupError(w, "Passwords do not match.")
-		return
-	}
-
-	// 1. Generate salt and derive KEK
-	salt, err := GenerateSalt()
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-	kek, err := DeriveKEK(password, salt)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-
-	// 2. Generate user DEK and wrap with KEK
-	dek, err := GenerateDEK()
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-	wrappedDEK, err := WrapDEK(dek, kek)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-
-	// 3. Hash password for login auth
-	pwHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-
-	// 4. Create admin user
-	userID, err := createUserWithDEK(a.db, username, string(pwHash), "admin", wrappedDEK, salt)
-	if err != nil {
-		a.renderSetupError(w, "Failed to create user: "+err.Error())
-		return
-	}
-
-	// 5. Generate 12-word Cryptographic Recovery Phrase & zero-knowledge backup
-	phrase, err := GenerateMnemonicPhrase(12)
-	if err == nil {
-		recSalt, _ := GenerateSalt()
-		recKEK, _ := DeriveKEK(NormalizePhrase(phrase), recSalt)
-		recEncDEK, _ := WrapDEK(dek, recKEK)
-		phraseHash, _ := bcrypt.GenerateFromPassword([]byte(NormalizePhrase(phrase)), bcrypt.DefaultCost)
-		_ = updateUserRecoveryData(a.db, userID, recEncDEK, recSalt, string(phraseHash))
-	}
-
-	// 6. Establish session and present recovery phrase
-	sid := newCSRFToken()
-	a.dekStore.Set(sid, dek)
-	encCookieDEK, _ := EncryptAESGCM(dek, a.serverKey)
-
-	sess.Values["user_id"] = userID
-	sess.Values["username"] = username
-	sess.Values["role"] = "admin"
-	sess.Values["session_token"] = sid
-	sess.Values["enc_dek"] = encCookieDEK
-	sess.Values["new_recovery_phrase"] = phrase
-	delete(sess.Values, "csrf")
-	sess.Save(r, w)
-
-	updateLastLogin(a.db, userID)
-	http.Redirect(w, r, "/setup/recovery", http.StatusSeeOther)
-}
-
-func (a *App) handleSetupRecoveryPage(w http.ResponseWriter, r *http.Request) {
-	user, err := a.getSessionUser(r)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	sess, _ := a.store.Get(r, sessionName)
-	phrase, _ := sess.Values["new_recovery_phrase"].(string)
-	if phrase == "" {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
-
-	token := newCSRFToken()
-	sess.Values["csrf"] = token
-	sess.Save(r, w)
-
-	words := strings.Fields(phrase)
-	a.tmpl.ExecuteTemplate(w, "setup_recovery.html", map[string]any{
-		"Username": user.Username,
-		"Phrase":   phrase,
-		"Words":    words,
-		"CSRF":     token,
-	})
-}
-
-func (a *App) handleSetupRecoverySubmit(w http.ResponseWriter, r *http.Request) {
-	sess, _ := a.store.Get(r, sessionName)
-	delete(sess.Values, "new_recovery_phrase")
-	sess.Save(r, w)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (a *App) renderSetupError(w http.ResponseWriter, msg string) {
-	token := newCSRFToken()
-	a.tmpl.ExecuteTemplate(w, "setup.html", map[string]any{
-		"CSRF":  token,
-		"Error": msg,
-	})
-}
-
-// --- Login & Logout ---
-
-func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	n, _ := countUsers(a.db)
-	if n == 0 {
-		http.Redirect(w, r, "/setup", http.StatusSeeOther)
-		return
-	}
-
-	if user, err := a.getSessionUser(r); err == nil && user != nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
-
-	sess, _ := a.store.Get(r, sessionName)
-	token := newCSRFToken()
-	sess.Values["csrf"] = token
-	sess.Save(r, w)
-	a.tmpl.ExecuteTemplate(w, "login.html", map[string]any{"CSRF": token})
-}
-
-func generateNumericOTP() (string, error) {
-	b := make([]byte, 3)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	num := (int(b[0])<<16 | int(b[1])<<8 | int(b[2])) % 1000000
-	return fmt.Sprintf("%06d", num), nil
-}
-
-func (a *App) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form, please retry", http.StatusForbidden)
-		return
-	}
-
-	ip := clientIP(r)
-	failures, lockedUntil, _ := loginFailures(a.db, ip)
-	if lockedUntil != nil && time.Now().Before(*lockedUntil) {
-		a.tmpl.ExecuteTemplate(w, "login.html", map[string]any{
-			"CSRF":  newCSRFToken(),
-			"Error": "Too many failed attempts. Try again in a few minutes.",
-		})
-		return
-	}
-
-	username := strings.TrimSpace(r.FormValue("username"))
-	password := r.FormValue("password")
-
-	user, err := getUserByUsername(a.db, username)
-	dummyHash := "$2a$10$CwTycUXWue0Thq9StjUM0uJ8Pg7YvVN3Xz.KM8XvL9nq7DkTX8/9K"
-	hashToCheck := dummyHash
-	if err == nil {
-		hashToCheck = user.PasswordHash
-	}
-	pwErr := bcrypt.CompareHashAndPassword([]byte(hashToCheck), []byte(password))
-
-	if err != nil || pwErr != nil {
-		recordLoginFailure(a.db, ip)
-		_ = failures
-		a.tmpl.ExecuteTemplate(w, "login.html", map[string]any{
-			"CSRF":  newCSRFToken(),
-			"Error": "Invalid username or password.",
-		})
-		return
-	}
-
-	// Derive KEK and unwrap user's DEK
-	kek, err := DeriveKEK(password, user.Salt)
-	if err != nil {
-		http.Error(w, "key derivation failure", http.StatusInternalServerError)
-		return
-	}
-
-	dek, err := UnwrapDEK(user.EncDEK, kek)
-	if err != nil {
-		recordLoginFailure(a.db, ip)
-		a.tmpl.ExecuteTemplate(w, "login.html", map[string]any{
-			"CSRF":  newCSRFToken(),
-			"Error": "Invalid credentials or corrupted vault.",
-		})
-		return
-	}
-
-	clearLoginFailures(a.db, ip)
-
-	// If user has Email or SMS OTP login verification enabled:
-	if user.OTPMethod == "email" || user.OTPMethod == "sms" {
-		otpCode, err := generateNumericOTP()
-		if err != nil {
-			http.Error(w, "otp generation error", http.StatusInternalServerError)
-			return
-		}
-
-		encPendingDEK, _ := EncryptAESGCM(dek, a.serverKey)
-		sess.Values["pending_otp_user_id"] = user.ID
-		sess.Values["pending_otp_code"] = otpCode
-		sess.Values["pending_otp_enc_dek"] = encPendingDEK
-		sess.Values["pending_otp_expiry"] = time.Now().Add(5 * time.Minute).Unix()
-
-		dest := user.Email
-		if user.OTPMethod == "sms" {
-			dest = user.Phone
-		}
-		sess.Values["pending_otp_dest"] = dest
-		sess.Values["pending_otp_method"] = user.OTPMethod
-
-		// Log OTP delivery for self-hosted visibility
-		fmt.Printf("\n========================================\n")
-		fmt.Printf("📬 [Ottie 2FA Delivery] User: %s\n", user.Username)
-		fmt.Printf("   Method: %s -> %s\n", strings.ToUpper(user.OTPMethod), dest)
-		fmt.Printf("   One-Time Passcode: %s (Expires in 5 mins)\n", otpCode)
-		fmt.Printf("========================================\n\n")
-
-		delete(sess.Values, "csrf")
-		sess.Save(r, w)
-		http.Redirect(w, r, "/login/otp", http.StatusSeeOther)
-		return
-	}
-
-	sid := newCSRFToken()
-	a.dekStore.Set(sid, dek)
-	encCookieDEK, _ := EncryptAESGCM(dek, a.serverKey)
-
-	sess.Values["user_id"] = user.ID
-	sess.Values["username"] = user.Username
-	sess.Values["role"] = user.Role
-	sess.Values["session_token"] = sid
-	sess.Values["enc_dek"] = encCookieDEK
-	delete(sess.Values, "csrf")
-	sess.Save(r, w)
-
-	updateLastLogin(a.db, user.ID)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (a *App) handleLoginOTPPage(w http.ResponseWriter, r *http.Request) {
-	sess, _ := a.store.Get(r, sessionName)
-	pendingUID, ok := sess.Values["pending_otp_user_id"].(int64)
-	if !ok || pendingUID == 0 {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-
-	user, err := getUserByID(a.db, pendingUID)
-	if err != nil || user == nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-
-	dest, _ := sess.Values["pending_otp_dest"].(string)
-	method, _ := sess.Values["pending_otp_method"].(string)
-
-	token := newCSRFToken()
-	sess.Values["csrf"] = token
-	sess.Save(r, w)
-
-	a.tmpl.ExecuteTemplate(w, "login_otp.html", map[string]any{
-		"Username": user.Username,
-		"Method":   method,
-		"Dest":     dest,
-		"CSRF":     token,
-	})
-}
-
-func (a *App) handleLoginOTPSubmit(w http.ResponseWriter, r *http.Request) {
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form, please retry", http.StatusForbidden)
-		return
-	}
-
-	pendingUID, ok := sess.Values["pending_otp_user_id"].(int64)
-	encPendingDEK, okDek := sess.Values["pending_otp_enc_dek"].(string)
-	expectedOTP, _ := sess.Values["pending_otp_code"].(string)
-	expiry, _ := sess.Values["pending_otp_expiry"].(int64)
-
-	if !ok || !okDek || pendingUID == 0 || encPendingDEK == "" {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-
-	user, err := getUserByID(a.db, pendingUID)
-	if err != nil || user == nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-
-	code := strings.TrimSpace(r.FormValue("code"))
-	recoveryKey := strings.TrimSpace(r.FormValue("recovery_code"))
-
-	valid := false
-	if code != "" {
-		if time.Now().Unix() <= expiry && code == expectedOTP {
-			valid = true
-		}
-	} else if recoveryKey != "" {
-		if VerifyRecoveryCode(recoveryKey, user.RecoveryCodeHash) {
-			valid = true
-		}
-	}
-
-	if !valid {
-		ip := clientIP(r)
-		recordLoginFailure(a.db, ip)
-		token := newCSRFToken()
-		sess.Values["csrf"] = token
-		sess.Save(r, w)
-
-		dest, _ := sess.Values["pending_otp_dest"].(string)
-		method, _ := sess.Values["pending_otp_method"].(string)
-
-		errMsg := "Invalid verification code or expired session."
-		if recoveryKey != "" {
-			errMsg = "Invalid Emergency Recovery Key."
-		}
-
-		a.tmpl.ExecuteTemplate(w, "login_otp.html", map[string]any{
-			"Username": user.Username,
-			"Method":   method,
-			"Dest":     dest,
-			"CSRF":     token,
-			"Error":    errMsg,
-		})
-		return
-	}
-
-	dek, err := DecryptAESGCM(encPendingDEK, a.serverKey)
-	if err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
-
-	sid := newCSRFToken()
-	a.dekStore.Set(sid, dek)
-
-	sess.Values["user_id"] = user.ID
-	sess.Values["username"] = user.Username
-	sess.Values["role"] = user.Role
-	sess.Values["session_token"] = sid
-	sess.Values["enc_dek"] = encPendingDEK
-	delete(sess.Values, "pending_otp_user_id")
-	delete(sess.Values, "pending_otp_code")
-	delete(sess.Values, "pending_otp_enc_dek")
-	delete(sess.Values, "pending_otp_expiry")
-	delete(sess.Values, "pending_otp_dest")
-	delete(sess.Values, "pending_otp_method")
-	delete(sess.Values, "csrf")
-	sess.Save(r, w)
-
-	updateLastLogin(a.db, user.ID)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (a *App) handleRecoverPage(w http.ResponseWriter, r *http.Request) {
-	sess, _ := a.store.Get(r, sessionName)
-	token := newCSRFToken()
-	sess.Values["csrf"] = token
-	sess.Save(r, w)
-
-	a.tmpl.ExecuteTemplate(w, "recover.html", map[string]any{
-		"CSRF": token,
-	})
-}
-
-func (a *App) handleRecoverSubmit(w http.ResponseWriter, r *http.Request) {
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form, please retry", http.StatusForbidden)
-		return
-	}
-
-	username := strings.TrimSpace(r.FormValue("username"))
-	rawPhrase := strings.TrimSpace(r.FormValue("recovery_phrase"))
-	newPassword := r.FormValue("new_password")
-	confirmPassword := r.FormValue("confirm_password")
-
-	if username == "" || rawPhrase == "" {
-		token := newCSRFToken()
-		sess.Values["csrf"] = token
-		sess.Save(r, w)
-		a.tmpl.ExecuteTemplate(w, "recover.html", map[string]any{
-			"CSRF":     token,
-			"Username": username,
-			"Error":    "Please provide your username and 12-word recovery phrase.",
-		})
-		return
-	}
-
-	if len(newPassword) < 8 {
-		token := newCSRFToken()
-		sess.Values["csrf"] = token
-		sess.Save(r, w)
-		a.tmpl.ExecuteTemplate(w, "recover.html", map[string]any{
-			"CSRF":     token,
-			"Username": username,
-			"Error":    "New password must be at least 8 characters long.",
-		})
-		return
-	}
-
-	if newPassword != confirmPassword {
-		token := newCSRFToken()
-		sess.Values["csrf"] = token
-		sess.Save(r, w)
-		a.tmpl.ExecuteTemplate(w, "recover.html", map[string]any{
-			"CSRF":     token,
-			"Username": username,
-			"Error":    "Passwords do not match.",
-		})
-		return
-	}
-
-	user, err := getUserByUsername(a.db, username)
-	if err != nil || user == nil || user.RecoveryEncDEK == "" || user.RecoverySalt == "" {
-		token := newCSRFToken()
-		sess.Values["csrf"] = token
-		sess.Save(r, w)
-		a.tmpl.ExecuteTemplate(w, "recover.html", map[string]any{
-			"CSRF":     token,
-			"Username": username,
-			"Error":    "Invalid username or recovery phrase.",
-		})
-		return
-	}
-
-	normPhrase := NormalizePhrase(rawPhrase)
-	recKEK, err := DeriveKEK(normPhrase, user.RecoverySalt)
-	if err != nil {
-		token := newCSRFToken()
-		sess.Values["csrf"] = token
-		sess.Save(r, w)
-		a.tmpl.ExecuteTemplate(w, "recover.html", map[string]any{
-			"CSRF":     token,
-			"Username": username,
-			"Error":    "Cryptographic error during recovery derivation.",
-		})
-		return
-	}
-
-	// Zero-knowledge recovery: unwrap user's DEK with recovery phrase key
-	dek, err := UnwrapDEK(user.RecoveryEncDEK, recKEK)
-	if err != nil {
-		token := newCSRFToken()
-		sess.Values["csrf"] = token
-		sess.Save(r, w)
-		a.tmpl.ExecuteTemplate(w, "recover.html", map[string]any{
-			"CSRF":     token,
-			"Username": username,
-			"Error":    "Invalid recovery phrase. Please verify all 12 words and order.",
-		})
-		return
-	}
-
-	// Re-encrypt DEK with the new password
-	newSalt, err := GenerateSalt()
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-	newKEK, err := DeriveKEK(newPassword, newSalt)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-	newWrappedDEK, err := WrapDEK(dek, newKEK)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-	newPwHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-
-	if err := updateUserPasswordAndDEK(a.db, user.ID, string(newPwHash), newWrappedDEK, newSalt); err != nil {
-		http.Error(w, "database update error", http.StatusInternalServerError)
-		return
-	}
-
-	// Successfully recovered! Establish active session and enter den
-	sid := newCSRFToken()
-	a.dekStore.Set(sid, dek)
-	encCookieDEK, _ := EncryptAESGCM(dek, a.serverKey)
-
-	sess.Values["user_id"] = user.ID
-	sess.Values["username"] = user.Username
-	sess.Values["role"] = user.Role
-	sess.Values["session_token"] = sid
-	sess.Values["enc_dek"] = encCookieDEK
-	delete(sess.Values, "csrf")
-	sess.Save(r, w)
-
-	updateLastLogin(a.db, user.ID)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
-	sess, _ := a.store.Get(r, sessionName)
-	if sid, ok := sess.Values["session_token"].(string); ok && sid != "" {
-		a.dekStore.Delete(sid)
-	}
-	sess.Options.MaxAge = -1
-	sess.Save(r, w)
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
-}
-
-// --- Dashboard & Codes API ---
-
-func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	user, err := a.getSessionUser(r)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-
-	accounts, err := listAccounts(a.db, user.ID)
-	if err != nil {
-		http.Error(w, "server error", http.StatusInternalServerError)
-		return
-	}
-
-	categories, _ := listCategories(a.db, user.ID)
-
-	sess, _ := a.store.Get(r, sessionName)
-	token := newCSRFToken()
-	sess.Values["csrf"] = token
-	sess.Save(r, w)
-
-	a.tmpl.ExecuteTemplate(w, "dashboard.html", map[string]any{
-		"User":       user,
-		"Accounts":   accounts,
-		"Categories": categories,
-		"CSRF":       token,
-		"IsAdmin":    user.Role == "admin",
-	})
 }
 
 func (a *App) handleCodesAPI(w http.ResponseWriter, r *http.Request) {
@@ -816,517 +215,6 @@ func (a *App) handleCodesAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(out)
-}
-
-func algoFromString(s string) otp.Algorithm {
-	switch strings.ToUpper(s) {
-	case "SHA256":
-		return otp.AlgorithmSHA256
-	case "SHA512":
-		return otp.AlgorithmSHA512
-	default:
-		return otp.AlgorithmSHA1
-	}
-}
-
-// --- Add Account ---
-
-func (a *App) handleAddPage(w http.ResponseWriter, r *http.Request) {
-	user, err := a.getSessionUser(r)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	sess, _ := a.store.Get(r, sessionName)
-	token := newCSRFToken()
-	sess.Values["csrf"] = token
-	sess.Save(r, w)
-	a.tmpl.ExecuteTemplate(w, "add.html", map[string]any{
-		"User":    user,
-		"CSRF":    token,
-		"IsAdmin": user.Role == "admin",
-	})
-}
-
-func (a *App) handleAddSubmit(w http.ResponseWriter, r *http.Request) {
-	user, err := a.getSessionUser(r)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form, please retry", http.StatusForbidden)
-		return
-	}
-
-	raw := strings.TrimSpace(r.FormValue("otpauth_or_secret"))
-	issuerOverride := strings.TrimSpace(r.FormValue("issuer"))
-	nameOverride := strings.TrimSpace(r.FormValue("account_name"))
-	category := strings.TrimSpace(r.FormValue("category"))
-	confirmCode := strings.TrimSpace(r.FormValue("confirm_code"))
-
-	if category == "" {
-		category = "Personal"
-	}
-
-	var key *otp.Key
-	if strings.HasPrefix(raw, "otpauth://") {
-		key, err = otp.NewKeyFromURL(raw)
-		if err != nil {
-			a.renderAddError(w, user, "Could not parse that otpauth:// URI.")
-			return
-		}
-	} else {
-		secret := strings.ToUpper(strings.ReplaceAll(raw, " ", ""))
-		if secret == "" || issuerOverride == "" || nameOverride == "" {
-			a.renderAddError(w, user, "Provide an otpauth:// URI, or a secret plus issuer and account name.")
-			return
-		}
-		key, err = otp.NewKeyFromURL("otpauth://totp/" + issuerOverride + ":" + nameOverride +
-			"?secret=" + secret + "&issuer=" + issuerOverride)
-		if err != nil {
-			a.renderAddError(w, user, "Invalid secret key.")
-			return
-		}
-	}
-
-	issuer := key.Issuer()
-	if issuerOverride != "" {
-		issuer = issuerOverride
-	}
-	name := key.AccountName()
-	if nameOverride != "" {
-		name = nameOverride
-	}
-	if issuer == "" {
-		issuer = "Account"
-	}
-	if name == "" {
-		name = "TOTP"
-	}
-
-	digits := 6
-	if d := key.Digits(); d != 0 {
-		digits = int(d)
-	}
-	period := 30
-	if p := key.Period(); p != 0 {
-		period = int(p)
-	}
-	algorithm := "SHA1"
-	if alg := key.Algorithm(); alg.String() != "" {
-		algorithm = alg.String()
-	}
-
-	// Verify confirmation code matches current live code (skew of 1 for clock drift)
-	valid, _ := totp.ValidateCustom(confirmCode, key.Secret(), time.Now(), totp.ValidateOpts{
-		Period: uint(period), Digits: otp.Digits(digits), Algorithm: algoFromString(algorithm), Skew: 1,
-	})
-	if !valid {
-		a.renderAddError(w, user, "That confirmation code didn't match. Check the secret and try again.")
-		return
-	}
-
-	// Encrypt secret with user's private DEK
-	encSecret, err := EncryptSecret(key.Secret(), user.DEK)
-	if err != nil {
-		http.Error(w, "encryption failure", http.StatusInternalServerError)
-		return
-	}
-
-	if err := insertAccount(a.db, user.ID, issuer, name, category, encSecret, digits, period, algorithm); err != nil {
-		http.Error(w, "database error", http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (a *App) renderAddError(w http.ResponseWriter, user *SessionUser, msg string) {
-	token := newCSRFToken()
-	a.tmpl.ExecuteTemplate(w, "add.html", map[string]any{
-		"User":    user,
-		"CSRF":    token,
-		"Error":   msg,
-		"IsAdmin": user.Role == "admin",
-	})
-}
-
-func (a *App) handleDelete(w http.ResponseWriter, r *http.Request) {
-	user, err := a.getSessionUser(r)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form, please retry", http.StatusForbidden)
-		return
-	}
-
-	idStr := r.FormValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	deleteAccount(a.db, user.ID, id)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-// --- Admin Panel (User Management) ---
-
-func (a *App) handleAdminPage(w http.ResponseWriter, r *http.Request) {
-	user, _ := a.getSessionUser(r)
-	users, err := listUsersForAdmin(a.db)
-	if err != nil {
-		http.Error(w, "server error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	totalUsers, totalAccounts, _ := getSystemStats(a.db)
-
-	sess, _ := a.store.Get(r, sessionName)
-	token := newCSRFToken()
-	sess.Values["csrf"] = token
-	sess.Save(r, w)
-
-	a.tmpl.ExecuteTemplate(w, "admin.html", map[string]any{
-		"User":          user,
-		"Users":         users,
-		"TotalUsers":    totalUsers,
-		"TotalAccounts": totalAccounts,
-		"CSRF":          token,
-		"IsAdmin":       true,
-	})
-}
-
-func (a *App) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
-	user, _ := a.getSessionUser(r)
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form, please retry", http.StatusForbidden)
-		return
-	}
-
-	username := strings.TrimSpace(r.FormValue("username"))
-	role := r.FormValue("role")
-	initialPassword := r.FormValue("password")
-
-	if role != "admin" {
-		role = "user"
-	}
-	if len(username) < 3 {
-		a.renderAdminError(w, user, "Username must be at least 3 characters.")
-		return
-	}
-	if len(initialPassword) < 8 {
-		a.renderAdminError(w, user, "Password must be at least 8 characters.")
-		return
-	}
-
-	// 1. Generate salt and derive KEK for new user
-	salt, err := GenerateSalt()
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-	kek, err := DeriveKEK(initialPassword, salt)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-
-	// 2. Generate unique DEK for the new user and wrap with KEK
-	dek, err := GenerateDEK()
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-	wrappedDEK, err := WrapDEK(dek, kek)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-
-	// 3. Hash password
-	pwHash, err := bcrypt.GenerateFromPassword([]byte(initialPassword), bcrypt.DefaultCost)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-
-	// 4. Create user
-	newUserID, err := createUserWithDEK(a.db, username, string(pwHash), role, wrappedDEK, salt)
-	if err != nil {
-		a.renderAdminError(w, user, "Failed to create user (username may already exist): "+err.Error())
-		return
-	}
-
-	// 5. Generate 12-word Cryptographic Recovery Phrase for new user
-	phrase, err := GenerateMnemonicPhrase(12)
-	if err == nil {
-		recSalt, _ := GenerateSalt()
-		recKEK, _ := DeriveKEK(NormalizePhrase(phrase), recSalt)
-		recEncDEK, _ := WrapDEK(dek, recKEK)
-		phraseHash, _ := bcrypt.GenerateFromPassword([]byte(NormalizePhrase(phrase)), bcrypt.DefaultCost)
-		_ = updateUserRecoveryData(a.db, newUserID, recEncDEK, recSalt, string(phraseHash))
-	}
-
-	http.Redirect(w, r, "/admin?success=user_created", http.StatusSeeOther)
-}
-
-func (a *App) handleAdminDeleteUser(w http.ResponseWriter, r *http.Request) {
-	currentUser, _ := a.getSessionUser(r)
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form, please retry", http.StatusForbidden)
-		return
-	}
-
-	targetIDStr := r.FormValue("user_id")
-	targetID, err := strconv.ParseInt(targetIDStr, 10, 64)
-	if err != nil {
-		http.Error(w, "invalid user id", http.StatusBadRequest)
-		return
-	}
-
-	if targetID == currentUser.ID {
-		a.renderAdminError(w, currentUser, "You cannot delete your own admin account from here.")
-		return
-	}
-
-	// Delete user and cascade all their accounts
-	if err := deleteUser(a.db, targetID); err != nil {
-		a.renderAdminError(w, currentUser, "Error deleting user: "+err.Error())
-		return
-	}
-
-	http.Redirect(w, r, "/admin?success=user_deleted", http.StatusSeeOther)
-}
-
-func (a *App) renderAdminError(w http.ResponseWriter, user *SessionUser, msg string) {
-	users, _ := listUsersForAdmin(a.db)
-	totalUsers, totalAccounts, _ := getSystemStats(a.db)
-	token := newCSRFToken()
-	a.tmpl.ExecuteTemplate(w, "admin.html", map[string]any{
-		"User":          user,
-		"Users":         users,
-		"TotalUsers":    totalUsers,
-		"TotalAccounts": totalAccounts,
-		"CSRF":          token,
-		"Error":         msg,
-		"IsAdmin":       true,
-	})
-}
-
-// --- Settings & Password Change & OTP / Recovery Keys ---
-
-func (a *App) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
-	user, err := a.getSessionUser(r)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	dbUser, err := getUserByID(a.db, user.ID)
-	if err != nil {
-		http.Error(w, "user error", http.StatusInternalServerError)
-		return
-	}
-	sess, _ := a.store.Get(r, sessionName)
-	token := newCSRFToken()
-	sess.Values["csrf"] = token
-	sess.Save(r, w)
-
-	a.tmpl.ExecuteTemplate(w, "settings.html", map[string]any{
-		"User":              user,
-		"RecoveryKeyActive": dbUser.RecoveryEncDEK != "",
-		"Email":             dbUser.Email,
-		"Phone":             dbUser.Phone,
-		"OTPMethod":         dbUser.OTPMethod,
-		"CSRF":              token,
-		"IsAdmin":           user.Role == "admin",
-	})
-}
-
-func (a *App) handleSettingsSaveOTP(w http.ResponseWriter, r *http.Request) {
-	user, err := a.getSessionUser(r)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form, please retry", http.StatusForbidden)
-		return
-	}
-
-	email := strings.TrimSpace(r.FormValue("email"))
-	phone := strings.TrimSpace(r.FormValue("phone"))
-	method := strings.TrimSpace(r.FormValue("otp_method"))
-
-	if method == "email" && email == "" {
-		a.renderSettingsMessage(w, user, "Please provide an email address for Email OTP delivery.", "")
-		return
-	}
-	if method == "sms" && phone == "" {
-		a.renderSettingsMessage(w, user, "Please provide a phone number for SMS OTP delivery.", "")
-		return
-	}
-
-	if err := updateUserContactAndOTP(a.db, user.ID, email, phone, method); err != nil {
-		a.renderSettingsMessage(w, user, "Failed to update login verification settings: "+err.Error(), "")
-		return
-	}
-
-	msg := "Login verification settings updated successfully."
-	if method == "email" {
-		msg = "Email OTP login verification is now enabled for " + email + "."
-	} else if method == "sms" {
-		msg = "SMS OTP login verification is now enabled for " + phone + "."
-	}
-	a.renderSettingsMessage(w, user, "", msg)
-}
-
-func (a *App) handleRegenerateRecovery(w http.ResponseWriter, r *http.Request) {
-	user, err := a.getSessionUser(r)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form, please retry", http.StatusForbidden)
-		return
-	}
-
-	password := r.FormValue("password")
-	dbUser, err := getUserByID(a.db, user.ID)
-	if err != nil {
-		http.Error(w, "user error", http.StatusInternalServerError)
-		return
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(dbUser.PasswordHash), []byte(password)); err != nil {
-		a.renderSettingsMessage(w, user, "Incorrect password. Recovery phrase was not changed.", "")
-		return
-	}
-
-	phrase, err := GenerateMnemonicPhrase(12)
-	if err != nil {
-		a.renderSettingsMessage(w, user, "Failed to generate new recovery phrase.", "")
-		return
-	}
-
-	recSalt, err := GenerateSalt()
-	if err != nil {
-		a.renderSettingsMessage(w, user, "Crypto failure.", "")
-		return
-	}
-	recKEK, err := DeriveKEK(NormalizePhrase(phrase), recSalt)
-	if err != nil {
-		a.renderSettingsMessage(w, user, "Crypto failure.", "")
-		return
-	}
-	recEncDEK, err := WrapDEK(user.DEK, recKEK)
-	if err != nil {
-		a.renderSettingsMessage(w, user, "Crypto failure.", "")
-		return
-	}
-	phraseHash, err := bcrypt.GenerateFromPassword([]byte(NormalizePhrase(phrase)), bcrypt.DefaultCost)
-	if err != nil {
-		a.renderSettingsMessage(w, user, "Crypto failure.", "")
-		return
-	}
-
-	if err := updateUserRecoveryData(a.db, user.ID, recEncDEK, recSalt, string(phraseHash)); err != nil {
-		a.renderSettingsMessage(w, user, "Database update error: "+err.Error(), "")
-		return
-	}
-
-	token := newCSRFToken()
-	words := strings.Fields(phrase)
-	a.tmpl.ExecuteTemplate(w, "settings.html", map[string]any{
-		"User":                user,
-		"RecoveryKeyActive":   true,
-		"NewRecoveryPhrase":   phrase,
-		"Words":               words,
-		"Email":               dbUser.Email,
-		"Phone":               dbUser.Phone,
-		"OTPMethod":           dbUser.OTPMethod,
-		"CSRF":                token,
-		"Success":             "New 12-Word Recovery Phrase generated! Make sure to write it down safely.",
-		"IsAdmin":             user.Role == "admin",
-	})
-}
-
-func (a *App) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
-	user, err := a.getSessionUser(r)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	sess, _ := a.store.Get(r, sessionName)
-	if !a.checkCSRF(r, sess) {
-		http.Error(w, "invalid or expired form, please retry", http.StatusForbidden)
-		return
-	}
-
-	currentPassword := r.FormValue("current_password")
-	newPassword := r.FormValue("new_password")
-	confirmPassword := r.FormValue("confirm_password")
-
-	dbUser, err := getUserByID(a.db, user.ID)
-	if err != nil {
-		http.Error(w, "user not found", http.StatusInternalServerError)
-		return
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(dbUser.PasswordHash), []byte(currentPassword)); err != nil {
-		a.renderSettingsMessage(w, user, "Current password is incorrect.", "")
-		return
-	}
-
-	if len(newPassword) < 8 {
-		a.renderSettingsMessage(w, user, "New password must be at least 8 characters.", "")
-		return
-	}
-	if newPassword != confirmPassword {
-		a.renderSettingsMessage(w, user, "New passwords do not match.", "")
-		return
-	}
-
-	// Derive new KEK with fresh salt
-	newSalt, err := GenerateSalt()
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-	newKEK, err := DeriveKEK(newPassword, newSalt)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-
-	// Re-wrap the existing DEK with the new KEK
-	newWrappedDEK, err := WrapDEK(user.DEK, newKEK)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-
-	// Hash new password
-	newHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
-	if err != nil {
-		http.Error(w, "crypto failure", http.StatusInternalServerError)
-		return
-	}
-
-	if err := updateUserPasswordAndDEK(a.db, user.ID, string(newHash), newWrappedDEK, newSalt); err != nil {
-		http.Error(w, "database update error", http.StatusInternalServerError)
-		return
-	}
-
-	a.renderSettingsMessage(w, user, "", "Password updated successfully!")
 }
 
 func (a *App) handleExportVault(w http.ResponseWriter, r *http.Request) {
@@ -1397,27 +285,866 @@ func (a *App) handleExportVault(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(payload)
 }
 
-func (a *App) renderSettingsMessage(w http.ResponseWriter, user *SessionUser, errMsg, successMsg string) {
-	dbUser, _ := getUserByID(a.db, user.ID)
-	email, phone, otpMethod := "", "", "none"
-	hasRec := false
-	if dbUser != nil {
-		hasRec = dbUser.RecoveryCodeHash != ""
-		email = dbUser.Email
-		phone = dbUser.Phone
-		otpMethod = dbUser.OTPMethod
+func algoFromString(s string) otp.Algorithm {
+	switch strings.ToUpper(s) {
+	case "SHA256":
+		return otp.AlgorithmSHA256
+	case "SHA512":
+		return otp.AlgorithmSHA512
+	default:
+		return otp.AlgorithmSHA1
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]any{
+		"success": false,
+		"error":   msg,
+	})
+}
+
+func isSMTPConfigured() bool {
+	return os.Getenv("SMTP_HOST") != "" || os.Getenv("OTTIE_SMTP_HOST") != "" || os.Getenv("SMTP_SERVER") != ""
+}
+
+func isSMSConfigured() bool {
+	return (os.Getenv("TWILIO_ACCOUNT_SID") != "" && os.Getenv("TWILIO_AUTH_TOKEN") != "") ||
+		os.Getenv("SMS_API_KEY") != "" ||
+		os.Getenv("OTTIE_SMS_GATEWAY") != "" ||
+		os.Getenv("TWILIO_PHONE_NUMBER") != ""
+}
+
+func (a *App) handleApiMe(w http.ResponseWriter, r *http.Request) {
+	count, err := countUsers(a.db)
+	if err == nil && count == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"setupNeeded":   true,
+			"authenticated": false,
+		})
+		return
 	}
 
-	token := newCSRFToken()
-	a.tmpl.ExecuteTemplate(w, "settings.html", map[string]any{
-		"User":              user,
-		"RecoveryKeyActive": hasRec,
-		"Email":             email,
-		"Phone":             phone,
-		"OTPMethod":         otpMethod,
-		"CSRF":              token,
-		"Error":             errMsg,
-		"Success":           successMsg,
-		"IsAdmin":           user.Role == "admin",
+	sess, _ := a.store.Get(r, sessionName)
+	token, _ := sess.Values["csrf"].(string)
+	if token == "" {
+		token = newCSRFToken()
+		sess.Values["csrf"] = token
+		sess.Save(r, w)
+	}
+	w.Header().Set("X-CSRF-Token", token)
+
+	user, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"setupNeeded":   false,
+			"authenticated": false,
+			"csrfToken":     token,
+		})
+		return
+	}
+
+	dbUser, _ := getUserByID(a.db, user.ID)
+	has2FA := false
+	method := "email"
+	dest := ""
+	if dbUser != nil {
+		has2FA = dbUser.OTPMethod != "" && dbUser.OTPMethod != "none"
+		method = dbUser.OTPMethod
+		if method == "email" {
+			dest = dbUser.Email
+		} else if method == "sms" {
+			dest = dbUser.Phone
+		}
+	}
+
+	phrase, _ := sess.Values["new_recovery_phrase"].(string)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"setupNeeded":   false,
+		"authenticated": true,
+		"csrfToken":     token,
+		"twoFactorConfig": map[string]bool{
+			"smtpConfigured": isSMTPConfigured(),
+			"smsConfigured":  isSMSConfigured(),
+		},
+		"user": map[string]any{
+			"id":             strconv.FormatInt(user.ID, 10),
+			"username":       user.Username,
+			"role":           user.Role,
+			"has2FA":         has2FA,
+			"deliveryMethod": method,
+			"deliveryDest":   dest,
+			"recoveryKey":    phrase,
+		},
+	})
+}
+
+func (a *App) handleApiAccounts(w http.ResponseWriter, r *http.Request) {
+	user, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	accounts, err := listAccounts(a.db, user.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to load accounts")
+		return
+	}
+
+	type AccountDTO struct {
+		ID          string `json:"id"`
+		Issuer      string `json:"issuer"`
+		AccountName string `json:"accountName"`
+		Category    string `json:"category"`
+		CreatedAt   string `json:"createdAt"`
+	}
+
+	dtos := make([]AccountDTO, 0, len(accounts))
+	for _, acc := range accounts {
+		cat := acc.Category
+		if cat == "" {
+			cat = "Personal"
+		}
+		dtos = append(dtos, AccountDTO{
+			ID:          strconv.FormatInt(acc.ID, 10),
+			Issuer:      acc.Issuer,
+			AccountName: acc.AccountName,
+			Category:    cat,
+			CreatedAt:   acc.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accounts": dtos,
+	})
+}
+
+func (a *App) handleApiSetup(w http.ResponseWriter, r *http.Request) {
+	count, err := countUsers(a.db)
+	if err == nil && count > 0 {
+		writeJSONError(w, http.StatusBadRequest, "Setup has already been completed.")
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	username := strings.TrimSpace(req.Username)
+	password := req.Password
+
+	if len(username) < 3 {
+		writeJSONError(w, http.StatusBadRequest, "Username must be at least 3 characters.")
+		return
+	}
+	if len(password) < 8 {
+		writeJSONError(w, http.StatusBadRequest, "Password must be at least 8 characters.")
+		return
+	}
+
+	salt, _ := GenerateSalt()
+	kek, _ := DeriveKEK(password, salt)
+	dek, _ := GenerateDEK()
+	wrappedDEK, _ := WrapDEK(dek, kek)
+	pwHash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+
+	userID, err := createUserWithDEK(a.db, username, string(pwHash), "admin", wrappedDEK, salt)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to create user: "+err.Error())
+		return
+	}
+
+	phrase, err := GenerateMnemonicPhrase(12)
+	if err == nil {
+		recSalt, _ := GenerateSalt()
+		recKEK, _ := DeriveKEK(NormalizePhrase(phrase), recSalt)
+		recEncDEK, _ := WrapDEK(dek, recKEK)
+		_ = updateUserRecoveryData(a.db, userID, recEncDEK, recSalt, "")
+	}
+
+	sess, _ := a.store.Get(r, sessionName)
+	sid := newCSRFToken()
+	a.dekStore.Set(sid, dek)
+	encCookieDEK, _ := EncryptAESGCM(dek, a.serverKey)
+
+	sess.Values["user_id"] = userID
+	sess.Values["username"] = username
+	sess.Values["role"] = "admin"
+	sess.Values["session_token"] = sid
+	sess.Values["enc_dek"] = encCookieDEK
+	sess.Values["new_recovery_phrase"] = phrase
+	sess.Save(r, w)
+
+	updateLastLogin(a.db, userID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":     true,
+		"recoveryKey": phrase,
+		"words":       strings.Fields(phrase),
+	})
+}
+
+func (a *App) handleApiSetupConfirm(w http.ResponseWriter, r *http.Request) {
+	sess, _ := a.store.Get(r, sessionName)
+	delete(sess.Values, "new_recovery_phrase")
+	sess.Save(r, w)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+	})
+}
+
+func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	username := strings.TrimSpace(req.Username)
+	password := req.Password
+
+	dbUser, err := getUserByUsername(a.db, username)
+	if err != nil || dbUser == nil {
+		writeJSONError(w, http.StatusUnauthorized, "Invalid username or password.")
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(dbUser.PasswordHash), []byte(password)); err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Invalid username or password.")
+		return
+	}
+
+	kek, err := DeriveKEK(password, dbUser.Salt)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Crypto key derivation error.")
+		return
+	}
+
+	dek, err := UnwrapDEK(dbUser.EncDEK, kek)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Master key decryption failed.")
+		return
+	}
+
+	sess, _ := a.store.Get(r, sessionName)
+
+	if dbUser.OTPMethod == "email" || dbUser.OTPMethod == "sms" {
+		otpCode, err := generateNumericOTP()
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "OTP generation error")
+			return
+		}
+		encDEKForPending, _ := EncryptAESGCM(dek, a.serverKey)
+
+		sess.Values["pending_otp_user_id"] = dbUser.ID
+		sess.Values["pending_username"] = dbUser.Username
+		sess.Values["pending_role"] = dbUser.Role
+		sess.Values["pending_otp_enc_dek"] = encDEKForPending
+		sess.Values["pending_otp_code"] = otpCode
+		sess.Values["pending_otp_expiry"] = time.Now().Add(5 * time.Minute).Unix()
+		sess.Save(r, w)
+
+		log.Printf("\n[Ottie 2FA Delivery] User: %s\n   Method: %s -> %s\n   One-Time Passcode: %s (Expires in 5 mins)\n",
+			dbUser.Username, dbUser.OTPMethod, dbUser.Email, otpCode)
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":     true,
+			"requires2FA": true,
+			"method":      dbUser.OTPMethod,
+		})
+		return
+	}
+
+	sid := newCSRFToken()
+	a.dekStore.Set(sid, dek)
+	encCookieDEK, _ := EncryptAESGCM(dek, a.serverKey)
+
+	token, _ := sess.Values["csrf"].(string)
+	if token == "" {
+		token = newCSRFToken()
+		sess.Values["csrf"] = token
+	}
+
+	sess.Values["user_id"] = dbUser.ID
+	sess.Values["username"] = dbUser.Username
+	sess.Values["role"] = dbUser.Role
+	sess.Values["session_token"] = sid
+	sess.Values["enc_dek"] = encCookieDEK
+	sess.Save(r, w)
+
+	updateLastLogin(a.db, dbUser.ID)
+	w.Header().Set("X-CSRF-Token", token)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":   true,
+		"csrfToken": token,
+		"user": map[string]any{
+			"id":             strconv.FormatInt(dbUser.ID, 10),
+			"username":       dbUser.Username,
+			"role":           dbUser.Role,
+			"has2FA":         dbUser.OTPMethod != "" && dbUser.OTPMethod != "none",
+			"deliveryMethod": dbUser.OTPMethod,
+		},
+	})
+}
+
+func (a *App) handleApiAuthVerify2FA(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	sess, _ := a.store.Get(r, sessionName)
+	pendingID, _ := sess.Values["pending_otp_user_id"].(int64)
+	if pendingID == 0 {
+		writeJSONError(w, http.StatusUnauthorized, "No pending login session")
+		return
+	}
+
+	expectedCode, _ := sess.Values["pending_otp_code"].(string)
+	expiry, _ := sess.Values["pending_otp_expiry"].(int64)
+
+	if time.Now().Unix() > expiry || req.Code != expectedCode {
+		writeJSONError(w, http.StatusUnauthorized, "Invalid or expired passcode")
+		return
+	}
+
+	encPendingDEK, _ := sess.Values["pending_otp_enc_dek"].(string)
+	dek, err := DecryptAESGCM(encPendingDEK, a.serverKey)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Session decryption error")
+		return
+	}
+
+	sid := newCSRFToken()
+	a.dekStore.Set(sid, dek)
+	encCookieDEK, _ := EncryptAESGCM(dek, a.serverKey)
+
+	username, _ := sess.Values["pending_username"].(string)
+	role, _ := sess.Values["pending_role"].(string)
+
+	token, _ := sess.Values["csrf"].(string)
+	if token == "" {
+		token = newCSRFToken()
+		sess.Values["csrf"] = token
+	}
+
+	delete(sess.Values, "pending_otp_user_id")
+	delete(sess.Values, "pending_username")
+	delete(sess.Values, "pending_role")
+	delete(sess.Values, "pending_otp_enc_dek")
+	delete(sess.Values, "pending_otp_code")
+	delete(sess.Values, "pending_otp_expiry")
+
+	sess.Values["user_id"] = pendingID
+	sess.Values["username"] = username
+	sess.Values["role"] = role
+	sess.Values["session_token"] = sid
+	sess.Values["enc_dek"] = encCookieDEK
+	sess.Save(r, w)
+
+	updateLastLogin(a.db, pendingID)
+	w.Header().Set("X-CSRF-Token", token)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":   true,
+		"csrfToken": token,
+		"user": map[string]any{
+			"id":       strconv.FormatInt(pendingID, 10),
+			"username": username,
+			"role":     role,
+		},
+	})
+}
+
+func (a *App) handleApiAuthVerifyOTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	sess, _ := a.store.Get(r, sessionName)
+	pendingID, _ := sess.Values["pending_otp_user_id"].(int64)
+	if pendingID == 0 {
+		writeJSONError(w, http.StatusUnauthorized, "No pending login session")
+		return
+	}
+
+	dbUser, err := getUserByID(a.db, pendingID)
+	if err != nil || dbUser == nil || dbUser.RecoveryEncDEK == "" || dbUser.RecoverySalt == "" {
+		writeJSONError(w, http.StatusUnauthorized, "Emergency recovery not configured")
+		return
+	}
+
+	normCode := NormalizePhrase(req.Code)
+	recKEK, err := DeriveKEK(normCode, dbUser.RecoverySalt)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Crypto key derivation error")
+		return
+	}
+
+	dek, err := UnwrapDEK(dbUser.RecoveryEncDEK, recKEK)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Invalid emergency recovery phrase")
+		return
+	}
+
+	sid := newCSRFToken()
+	a.dekStore.Set(sid, dek)
+	encCookieDEK, _ := EncryptAESGCM(dek, a.serverKey)
+
+	username, _ := sess.Values["pending_username"].(string)
+	role, _ := sess.Values["pending_role"].(string)
+
+	delete(sess.Values, "pending_otp_user_id")
+	delete(sess.Values, "pending_username")
+	delete(sess.Values, "pending_role")
+	delete(sess.Values, "pending_otp_enc_dek")
+
+	sess.Values["user_id"] = pendingID
+	sess.Values["username"] = username
+	sess.Values["role"] = role
+	sess.Values["session_token"] = sid
+	sess.Values["enc_dek"] = encCookieDEK
+	sess.Save(r, w)
+
+	updateLastLogin(a.db, pendingID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"user": map[string]any{
+			"id":       strconv.FormatInt(pendingID, 10),
+			"username": username,
+			"role":     role,
+		},
+	})
+}
+
+func (a *App) handleApiAuthRecover(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username    string `json:"username"`
+		RecoveryKey string `json:"recoveryKey"`
+		NewPassword string `json:"newPassword"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	username := strings.TrimSpace(req.Username)
+	phrase := NormalizePhrase(req.RecoveryKey)
+	newPassword := req.NewPassword
+
+	dbUser, err := getUserByUsername(a.db, username)
+	if err != nil || dbUser == nil || dbUser.RecoveryEncDEK == "" || dbUser.RecoverySalt == "" {
+		writeJSONError(w, http.StatusBadRequest, "Invalid username or no recovery key configured.")
+		return
+	}
+
+	recKEK, err := DeriveKEK(phrase, dbUser.RecoverySalt)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Crypto recovery error.")
+		return
+	}
+
+	dek, err := UnwrapDEK(dbUser.RecoveryEncDEK, recKEK)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid recovery phrase.")
+		return
+	}
+
+	newSalt, _ := GenerateSalt()
+	newKEK, _ := DeriveKEK(newPassword, newSalt)
+	newWrappedDEK, _ := WrapDEK(dek, newKEK)
+	newPWHash, _ := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+
+	if err := updateUserPasswordAndDEK(a.db, dbUser.ID, string(newPWHash), newWrappedDEK, newSalt); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to update vault password.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+	})
+}
+
+func (a *App) handleApiAuthLogout(w http.ResponseWriter, r *http.Request) {
+	sess, _ := a.store.Get(r, sessionName)
+	if sid, ok := sess.Values["session_token"].(string); ok {
+		a.dekStore.Delete(sid)
+	}
+	sess.Options.MaxAge = -1
+	sess.Save(r, w)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+	})
+}
+
+func (a *App) handleApiTokens(w http.ResponseWriter, r *http.Request) {
+	user, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	var req struct {
+		Secret      string `json:"secret"`
+		Issuer      string `json:"issuer"`
+		AccountName string `json:"accountName"`
+		Category    string `json:"category"`
+		Code        string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	rawSecret := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(req.Secret), " ", ""))
+	issuer := strings.TrimSpace(req.Issuer)
+	accountName := strings.TrimSpace(req.AccountName)
+	category := strings.TrimSpace(req.Category)
+	if category == "" {
+		category = "Personal"
+	}
+
+	if rawSecret == "" || issuer == "" {
+		writeJSONError(w, http.StatusBadRequest, "Secret key and Issuer are required.")
+		return
+	}
+
+	if req.Code != "" {
+		valid := totp.Validate(strings.TrimSpace(req.Code), rawSecret)
+		if !valid {
+			writeJSONError(w, http.StatusBadRequest, "Live confirmation code did not match secret.")
+			return
+		}
+	}
+
+	encSecret, err := EncryptSecret(rawSecret, user.DEK)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to encrypt secret.")
+		return
+	}
+
+	if err := insertAccount(a.db, user.ID, issuer, accountName, category, encSecret, 6, 30, "SHA1"); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Database error creating token.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+	})
+}
+
+func (a *App) handleApiTokensDelete(w http.ResponseWriter, r *http.Request) {
+	user, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	idInt, err := strconv.ParseInt(req.ID, 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid token ID")
+		return
+	}
+
+	if err := deleteAccount(a.db, idInt, user.ID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to delete token.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+	})
+}
+
+func (a *App) handleApiSettingsPassword(w http.ResponseWriter, r *http.Request) {
+	user, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	dbUser, err := getUserByID(a.db, user.ID)
+	if err != nil || dbUser == nil {
+		writeJSONError(w, http.StatusBadRequest, "User not found")
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(dbUser.PasswordHash), []byte(req.CurrentPassword)); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Current master key is incorrect.")
+		return
+	}
+
+	newSalt, _ := GenerateSalt()
+	newKEK, _ := DeriveKEK(req.NewPassword, newSalt)
+	newWrappedDEK, _ := WrapDEK(user.DEK, newKEK)
+	newPWHash, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+
+	if err := updateUserPasswordAndDEK(a.db, user.ID, string(newPWHash), newWrappedDEK, newSalt); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to update password.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+	})
+}
+
+func (a *App) handleApiSettingsOTP(w http.ResponseWriter, r *http.Request) {
+	user, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	var req struct {
+		Enabled     bool   `json:"enabled"`
+		Method      string `json:"method"`
+		Destination string `json:"destination"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	method := "none"
+	if req.Enabled {
+		method = strings.ToLower(strings.TrimSpace(req.Method))
+		if method == "" || method == "email" {
+			if !isSMTPConfigured() {
+				writeJSONError(w, http.StatusBadRequest, "Email (SMTP) is not configured in the server environment.")
+				return
+			}
+			method = "email"
+		} else if method == "sms" {
+			if !isSMSConfigured() {
+				writeJSONError(w, http.StatusBadRequest, "Text/Phone (SMS) is not configured in the server environment.")
+				return
+			}
+			method = "sms"
+		} else {
+			writeJSONError(w, http.StatusBadRequest, "Invalid 2FA delivery method.")
+			return
+		}
+	}
+
+	email := ""
+	phone := ""
+	if method == "email" {
+		email = strings.TrimSpace(req.Destination)
+		if email == "" {
+			writeJSONError(w, http.StatusBadRequest, "Destination email address is required.")
+			return
+		}
+	} else if method == "sms" {
+		phone = strings.TrimSpace(req.Destination)
+		if phone == "" {
+			writeJSONError(w, http.StatusBadRequest, "Destination phone number is required.")
+			return
+		}
+	}
+
+	if err := updateUserContactAndOTP(a.db, user.ID, email, phone, method); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to update OTP settings.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+	})
+}
+
+func (a *App) handleApiSettingsRecoveryRegenerate(w http.ResponseWriter, r *http.Request) {
+	user, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	phrase, err := GenerateMnemonicPhrase(12)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Phrase generation failed")
+		return
+	}
+
+	recSalt, _ := GenerateSalt()
+	recKEK, _ := DeriveKEK(NormalizePhrase(phrase), recSalt)
+	recEncDEK, _ := WrapDEK(user.DEK, recKEK)
+
+	if err := updateUserRecoveryData(a.db, user.ID, recEncDEK, recSalt, ""); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to update recovery key.")
+		return
+	}
+
+	sess, _ := a.store.Get(r, sessionName)
+	sess.Values["new_recovery_phrase"] = phrase
+	sess.Save(r, w)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":     true,
+		"recoveryKey": phrase,
+	})
+}
+
+func (a *App) handleApiAdminUsers(w http.ResponseWriter, r *http.Request) {
+	_, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	users, err := listUsersForAdmin(a.db)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to retrieve users.")
+		return
+	}
+
+	type UserDTO struct {
+		ID         string `json:"id"`
+		Username   string `json:"username"`
+		Role       string `json:"role"`
+		TokenCount int    `json:"tokenCount"`
+		CreatedAt  string `json:"createdAt"`
+	}
+
+	dtos := make([]UserDTO, 0, len(users))
+	for _, u := range users {
+		dtos = append(dtos, UserDTO{
+			ID:         strconv.FormatInt(u.ID, 10),
+			Username:   u.Username,
+			Role:       u.Role,
+			TokenCount: u.AccountCount,
+			CreatedAt:  u.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"users": dtos,
+	})
+}
+
+func (a *App) handleApiAdminUsersCreate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	username := strings.TrimSpace(req.Username)
+	password := req.Password
+	role := req.Role
+	if role != "admin" && role != "user" {
+		role = "user"
+	}
+
+	if len(username) < 3 || len(password) < 8 {
+		writeJSONError(w, http.StatusBadRequest, "Username min 3 chars, password min 8 chars.")
+		return
+	}
+
+	salt, _ := GenerateSalt()
+	kek, _ := DeriveKEK(password, salt)
+	dek, _ := GenerateDEK()
+	wrappedDEK, _ := WrapDEK(dek, kek)
+	pwHash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+
+	userID, err := createUserWithDEK(a.db, username, string(pwHash), role, wrappedDEK, salt)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Failed to create user: "+err.Error())
+		return
+	}
+
+	phrase, err := GenerateMnemonicPhrase(12)
+	if err == nil {
+		recSalt, _ := GenerateSalt()
+		recKEK, _ := DeriveKEK(NormalizePhrase(phrase), recSalt)
+		recEncDEK, _ := WrapDEK(dek, recKEK)
+		_ = updateUserRecoveryData(a.db, userID, recEncDEK, recSalt, "")
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+	})
+}
+
+func (a *App) handleApiAdminUsersDelete(w http.ResponseWriter, r *http.Request) {
+	currUser, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	idInt, err := strconv.ParseInt(req.ID, 10, 64)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid user ID")
+		return
+	}
+
+	if idInt == currUser.ID {
+		writeJSONError(w, http.StatusBadRequest, "Cannot delete your own account.")
+		return
+	}
+
+	if err := deleteUser(a.db, idInt); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to delete user.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
 	})
 }

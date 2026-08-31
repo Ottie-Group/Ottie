@@ -1,4 +1,14 @@
-# --- Build Stage ---
+# Build React
+FROM --platform=$BUILDPLATFORM oven/bun:1-alpine AS frontend-builder
+
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/bun.lock* ./
+RUN bun install --frozen-lockfile || bun install
+
+COPY frontend/ ./
+RUN bun run build
+
+# Build Go
 FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
 
 WORKDIR /src
@@ -8,6 +18,8 @@ COPY go.mod go.sum* ./
 RUN go mod download
 
 COPY . .
+# Copy Compiled React
+COPY --from=frontend-builder /src/frontend/dist ./frontend/dist
 
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
@@ -17,6 +29,7 @@ RUN adduser -D -u 10001 -g "" appuser && \
     mkdir -p /out/data && \
     chown -R 10001:10001 /out/data
 
+# Alpine Deploy Stage
 FROM alpine:3.20
 
 RUN apk --no-cache add ca-certificates tzdata && \
