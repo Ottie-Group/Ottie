@@ -19,8 +19,19 @@ export function SetupWizardPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password) {
+    const trimmedUser = username.trim();
+    if (!trimmedUser || !password) {
       showToast('Please provide an admin username and password.');
+      return;
+    }
+
+    if (trimmedUser.length < 3) {
+      showToast('Admin username must be at least 3 characters long.');
+      return;
+    }
+
+    if (password.length < 8) {
+      showToast('Master key must be at least 8 characters long.');
       return;
     }
 

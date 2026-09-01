@@ -1026,6 +1026,21 @@ func (a *App) handleApiAuthRecover(w http.ResponseWriter, r *http.Request) {
 	phrase := NormalizePhrase(req.RecoveryKey)
 	newPassword := req.NewPassword
 
+	if username == "" {
+		writeJSONError(w, http.StatusBadRequest, "Otter Name (Username) is required.")
+		return
+	}
+
+	if phrase == "" || len(strings.Fields(phrase)) != 12 {
+		writeJSONError(w, http.StatusBadRequest, "Please provide all 12 recovery words.")
+		return
+	}
+
+	if len(newPassword) < 8 {
+		writeJSONError(w, http.StatusBadRequest, "New master key must be at least 8 characters.")
+		return
+	}
+
 	dbUser, err := getUserByUsername(a.db, username)
 	if err != nil || dbUser == nil || dbUser.RecoveryEncDEK == "" || dbUser.RecoverySalt == "" {
 		writeJSONError(w, http.StatusBadRequest, "Invalid username or no recovery key configured.")
@@ -1091,16 +1106,77 @@ func (a *App) handleApiTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawSecret := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(req.Secret), " ", ""))
+	rawInput := strings.TrimSpace(req.Secret)
+	var rawSecret, parsedIssuer, parsedAccount string
+
+	if strings.HasPrefix(strings.ToLower(rawInput), "otpauth://") {
+		u, err := url.Parse(rawInput)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "Invalid otpauth URI format.")
+			return
+		}
+		q := u.Query()
+		rawSecret = strings.ToUpper(strings.ReplaceAll(q.Get("secret"), " ", ""))
+		parsedIssuer = q.Get("issuer")
+		label := strings.TrimPrefix(u.Path, "/")
+		label = strings.TrimPrefix(label, "totp/")
+		label = strings.TrimPrefix(label, "hotp/")
+		label, _ = url.PathUnescape(label)
+		if strings.Contains(label, ":") {
+			parts := strings.SplitN(label, ":", 2)
+			if parsedIssuer == "" {
+				parsedIssuer = strings.TrimSpace(parts[0])
+			}
+			parsedAccount = strings.TrimSpace(parts[1])
+		} else if label != "" && parsedAccount == "" {
+			parsedAccount = strings.TrimSpace(label)
+		}
+	} else {
+		rawSecret = strings.ToUpper(strings.ReplaceAll(rawInput, " ", ""))
+	}
+
 	issuer := strings.TrimSpace(req.Issuer)
+	if issuer == "" && parsedIssuer != "" {
+		issuer = parsedIssuer
+	}
+
 	accountName := strings.TrimSpace(req.AccountName)
+	if accountName == "" && parsedAccount != "" {
+		accountName = parsedAccount
+	}
+
 	category := strings.TrimSpace(req.Category)
 	if category == "" {
 		category = "Personal"
 	}
 
-	if rawSecret == "" || issuer == "" {
-		writeJSONError(w, http.StatusBadRequest, "Secret key and Issuer are required.")
+	if rawSecret == "" || !isValidBase32(rawSecret) {
+		writeJSONError(w, http.StatusBadRequest, "Secret key must be a valid Base32 string (letters A-Z and digits 2-7) or a valid otpauth:// URI.")
+		return
+	}
+
+	if len(rawSecret) < 8 {
+		writeJSONError(w, http.StatusBadRequest, "Secret key must be at least 8 characters long.")
+		return
+	}
+
+	if issuer == "" {
+		writeJSONError(w, http.StatusBadRequest, "Service / Issuer name is required.")
+		return
+	}
+
+	if len(issuer) > 100 {
+		writeJSONError(w, http.StatusBadRequest, "Issuer name must not exceed 100 characters.")
+		return
+	}
+
+	if len(accountName) > 100 {
+		writeJSONError(w, http.StatusBadRequest, "Account name must not exceed 100 characters.")
+		return
+	}
+
+	if len(category) > 50 {
+		writeJSONError(w, http.StatusBadRequest, "Category name must not exceed 50 characters.")
 		return
 	}
 
@@ -1175,6 +1251,16 @@ func (a *App) handleApiSettingsPassword(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if len(req.NewPassword) < 8 {
+		writeJSONError(w, http.StatusBadRequest, "New master key must be at least 8 characters.")
+		return
+	}
+
+	if req.NewPassword == req.CurrentPassword {
+		writeJSONError(w, http.StatusBadRequest, "New master key cannot be the same as your current master key.")
+		return
+	}
+
 	dbUser, err := getUserByID(a.db, user.ID)
 	if err != nil || dbUser == nil {
 		writeJSONError(w, http.StatusBadRequest, "User not found")
@@ -1243,14 +1329,14 @@ func (a *App) handleApiSettingsOTP(w http.ResponseWriter, r *http.Request) {
 	phone := ""
 	if method == "email" {
 		email = strings.TrimSpace(req.Destination)
-		if email == "" {
-			writeJSONError(w, http.StatusBadRequest, "Destination email address is required.")
+		if email == "" || !isValidEmail(email) {
+			writeJSONError(w, http.StatusBadRequest, "Please provide a valid destination email address.")
 			return
 		}
 	} else if method == "sms" {
 		phone = strings.TrimSpace(req.Destination)
-		if phone == "" {
-			writeJSONError(w, http.StatusBadRequest, "Destination phone number is required.")
+		if phone == "" || !isValidPhone(phone) {
+			writeJSONError(w, http.StatusBadRequest, "Please provide a valid destination phone number (at least 7 digits).")
 			return
 		}
 	}

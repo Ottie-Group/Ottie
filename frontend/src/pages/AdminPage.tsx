@@ -59,19 +59,30 @@ export function AdminPage() {
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUsername.trim() || !newPassword) {
+    const trimmedUser = newUsername.trim();
+    if (!trimmedUser || !newPassword) {
       showToast('Please provide username and password.');
+      return;
+    }
+
+    if (trimmedUser.length < 3) {
+      showToast('Username must be at least 3 characters long.');
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      showToast('Master key must be at least 8 characters long.');
       return;
     }
 
     try {
       setIsCreating(true);
       await api.post('/api/admin/users/create', {
-        username: newUsername.trim(),
+        username: trimmedUser,
         password: newPassword,
         role: newRole,
       });
-      showToast(`User ${newUsername.trim()} created!`);
+      showToast(`User ${trimmedUser} created!`);
       setNewUsername('');
       setNewPassword('');
       setNewRole('user');

@@ -65,6 +65,14 @@ export function SettingsPage() {
       showToast('Please fill in both current and new password.');
       return;
     }
+    if (newPassword.length < 8) {
+      showToast('New master key must be at least 8 characters long.');
+      return;
+    }
+    if (newPassword === currentPassword) {
+      showToast('New master key cannot be the same as your current master key.');
+      return;
+    }
     if (newPassword !== confirmPassword) {
       showToast('New passwords do not match.');
       return;
@@ -98,13 +106,28 @@ export function SettingsPage() {
         showToast('Text/Phone (SMS) is not configured on the server.');
         return;
       }
-      if (!deliveryDest.trim()) {
+      const trimmedDest = deliveryDest.trim();
+      if (!trimmedDest) {
         showToast(
           deliveryMethod === 'email'
             ? 'Please provide a destination email address.'
             : 'Please provide a destination mobile phone number.'
         );
         return;
+      }
+
+      if (deliveryMethod === 'email') {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(trimmedDest)) {
+          showToast('Please provide a valid email address (e.g. user@example.com).');
+          return;
+        }
+      } else if (deliveryMethod === 'sms') {
+        const phoneDigits = trimmedDest.replace(/\D/g, '');
+        if (phoneDigits.length < 7 || phoneDigits.length > 18) {
+          showToast('Please provide a valid mobile phone number (with at least 7 digits).');
+          return;
+        }
       }
     }
 

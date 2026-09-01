@@ -49,6 +49,46 @@ export function AddTokenPage() {
   const addToken = useVaultStore((state) => state.addToken);
   const showToast = useToastStore((state) => state.showToast);
 
+  // Helper to extract clean Base32 secret from either a raw string or an otpauth:// URI
+  const extractSecretAndMetadata = useCallback((input: string) => {
+    const trimmed = input.trim();
+    if (trimmed.toLowerCase().startsWith('otpauth://')) {
+      try {
+        const parsed = new URL(trimmed);
+        if (parsed.protocol === 'otpauth:') {
+          const sec = parsed.searchParams.get('secret') || '';
+          const iss = parsed.searchParams.get('issuer') || '';
+          const label = decodeURIComponent(parsed.pathname.replace(/^\/\/?(totp|hotp)\//i, ''));
+          let acc = '';
+          let derivedIssuer = iss;
+          if (label.includes(':')) {
+            const parts = label.split(':');
+            if (!derivedIssuer) derivedIssuer = parts[0].trim();
+            acc = parts[1].trim();
+          } else if (label) {
+            acc = label.trim();
+          }
+          return {
+            secret: sec.replace(/\s+/g, '').toUpperCase(),
+            issuer: derivedIssuer,
+            accountName: acc,
+            isUri: true,
+            isValidUri: Boolean(sec),
+          };
+        }
+      } catch {
+        return { secret: '', issuer: '', accountName: '', isUri: true, isValidUri: false };
+      }
+    }
+    return {
+      secret: trimmed.replace(/\s+/g, '').toUpperCase(),
+      issuer: '',
+      accountName: '',
+      isUri: false,
+      isValidUri: false,
+    };
+  }, []);
+
   // Tick every second to update live TOTP preview
   useEffect(() => {
     const timer = setInterval(() => {
@@ -61,14 +101,16 @@ export function AddTokenPage() {
   let livePreviewCode: string | null = null;
   if (secret.trim()) {
     try {
-      const cleanSecret = secret.trim().replace(/\s+/g, '').toUpperCase();
-      const totp = new OTPAuth.TOTP({
-        secret: cleanSecret,
-        algorithm: 'SHA1',
-        digits: 6,
-        period: 30,
-      });
-      livePreviewCode = totp.generate();
+      const extracted = extractSecretAndMetadata(secret);
+      if (extracted.secret && /^[A-Z2-7=]+$/.test(extracted.secret) && extracted.secret.length >= 8) {
+        const totp = new OTPAuth.TOTP({
+          secret: extracted.secret,
+          algorithm: 'SHA1',
+          digits: 6,
+          period: 30,
+        });
+        livePreviewCode = totp.generate();
+      }
     } catch {
       livePreviewCode = null;
     }
@@ -237,29 +279,64 @@ export function AddTokenPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!secret.trim()) {
-      showToast('Please enter a secret key.');
+    const extracted = extractSecretAndMetadata(secret);
+
+    if (extracted.isUri && !extracted.isValidUri) {
+      showToast('Invalid otpauth URI. Make sure it includes a valid "secret=" parameter.');
       return;
     }
-    if (!issuer.trim()) {
-      showToast('Please enter an issuer name (e.g. GitHub).');
+
+    if (!extracted.secret) {
+      showToast('Please enter a secret key or otpauth URI.');
+      return;
+    }
+
+    if (!/^[A-Z2-7=]+$/.test(extracted.secret)) {
+      showToast('Secret key must be a valid Base32 string (letters A-Z and digits 2-7).');
+      return;
+    }
+
+    if (extracted.secret.length < 8) {
+      showToast('Secret key must be at least 8 characters long.');
+      return;
+    }
+
+    const finalIssuer = (issuer.trim() || extracted.issuer).trim();
+    if (!finalIssuer) {
+      showToast('Please enter a service/issuer name (e.g. GitHub).');
+      return;
+    }
+
+    if (finalIssuer.length > 100) {
+      showToast('Issuer name must not exceed 100 characters.');
+      return;
+    }
+
+    const finalAccount = (accountName.trim() || extracted.accountName).trim();
+    if (finalAccount.length > 100) {
+      showToast('Account name must not exceed 100 characters.');
+      return;
+    }
+
+    if (categoryChoice === 'custom' && !customCategory.trim()) {
+      showToast('Please enter a label for your custom category.');
       return;
     }
 
     const finalCategory =
       categoryChoice === 'custom'
-        ? customCategory.trim() || 'Personal'
+        ? customCategory.trim()
         : categoryChoice;
 
     try {
       setIsSubmitting(true);
       await addToken({
-        secret: secret.trim(),
-        issuer: issuer.trim(),
-        accountName: accountName.trim(),
+        secret: extracted.secret,
+        issuer: finalIssuer,
+        accountName: finalAccount,
         category: finalCategory,
       });
-      showToast(`Pebble for ${issuer.trim()} added!`);
+      showToast(`Pebble for ${finalIssuer} added!`);
       navigate('/', { replace: true });
     } catch (err: any) {
       showToast(err.message || 'Failed to add pebble.');

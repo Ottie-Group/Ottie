@@ -20,8 +20,21 @@ export function RecoverAccountPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !recoveryWords.trim() || !newPassword) {
+    const trimmedUser = username.trim();
+    const trimmedWords = recoveryWords.trim();
+    if (!trimmedUser || !trimmedWords || !newPassword) {
       showToast('Please fill in all recovery fields.');
+      return;
+    }
+
+    const wordsList = trimmedWords.split(/\s+/).filter(Boolean);
+    if (wordsList.length !== 12) {
+      showToast(`Expected 12 recovery words, but found ${wordsList.length}. Please check your phrase.`);
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      showToast('New master key must be at least 8 characters long.');
       return;
     }
 

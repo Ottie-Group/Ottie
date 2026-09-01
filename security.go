@@ -4,10 +4,46 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+var (
+	emailRegex  = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+	phoneRegex  = regexp.MustCompile(`^\+?[0-9\s\-()]{7,25}$`)
+	base32Regex = regexp.MustCompile(`^[A-Z2-7=]+$`)
+)
+
+// isValidEmail checks standard email syntax
+func isValidEmail(email string) bool {
+	if len(email) < 3 || len(email) > 254 {
+		return false
+	}
+	return emailRegex.MatchString(email)
+}
+
+// isValidPhone validates reasonable phone number strings
+func isValidPhone(phone string) bool {
+	clean := strings.ReplaceAll(phone, " ", "")
+	clean = strings.ReplaceAll(clean, "-", "")
+	clean = strings.ReplaceAll(clean, "(", "")
+	clean = strings.ReplaceAll(clean, ")", "")
+	if len(clean) < 7 || len(clean) > 20 {
+		return false
+	}
+	return phoneRegex.MatchString(phone)
+}
+
+// isValidBase32 checks if string contains only valid RFC 4648 Base32 characters
+func isValidBase32(s string) bool {
+	clean := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(s), " ", ""))
+	if len(clean) < 8 || len(clean) > 256 {
+		return false
+	}
+	return base32Regex.MatchString(clean)
+}
 
 // RateLimiter tracks recent attempts by IP and key with automatic cleanup
 type RateLimiter struct {
