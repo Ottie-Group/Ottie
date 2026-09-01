@@ -100,6 +100,4 @@ go build -trimpath -ldflags="-s -w" -o ottie .
 
 ---
 
-## 📜 License
-
-MIT License. Designed with 💚 for security and simplicity.
+Designed with 💚 for security and simplicity.
