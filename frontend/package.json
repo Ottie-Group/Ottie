@@ -23,6 +23,7 @@
   "devDependencies": {
     "@emotion/babel-plugin": "^11.13.5",
     "@eslint/js": "^10.0.1",
+    "@types/bun": "^1.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.1",
