@@ -40,7 +40,6 @@ export function AddTokenPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-  const scanVideoFrameRef = useRef<() => void>(() => {});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -123,63 +122,146 @@ export function AddTokenPage() {
     }
   };
 
-  const parseOtpAuthUri = useCallback((uri: string) => {
-    try {
-      const parsed = new URL(uri);
-      if (parsed.protocol === 'otpauth:') {
-        const sec = parsed.searchParams.get('secret');
-        const iss = parsed.searchParams.get('issuer');
-        const label = decodeURIComponent(parsed.pathname.replace(/^\/\/?(totp|hotp)\//i, ''));
+  const parseOtpAuthUri = useCallback((data: string) => {
+    const trimmed = data.trim();
+    if (trimmed.toLowerCase().startsWith('otpauth://')) {
+      try {
+        const parsed = new URL(trimmed);
+        if (parsed.protocol === 'otpauth:') {
+          const sec = parsed.searchParams.get('secret');
+          const iss = parsed.searchParams.get('issuer');
+          const label = decodeURIComponent(parsed.pathname.replace(/^\/\/?(totp|hotp)\//i, ''));
 
-        if (label.includes(':')) {
-          const parts = label.split(':');
-          if (!iss) setIssuer(parts[0]);
-          setAccountName(parts[1]);
-        } else if (label) {
-          setAccountName(label);
+          if (label.includes(':')) {
+            const parts = label.split(':');
+            if (!iss && parts[0].trim()) setIssuer(parts[0].trim());
+            if (parts[1].trim()) setAccountName(parts[1].trim());
+          } else if (label.trim()) {
+            setAccountName(label.trim());
+          }
+          if (sec) setSecret(sec.trim());
+          if (iss && iss.trim()) setIssuer(iss.trim());
+          showToast('Scanned QR code successfully!');
+          return;
         }
-        if (sec) setSecret(sec);
-        if (iss) setIssuer(iss);
-        showToast('Scanned QR code successfully!');
-      } else {
-        showToast('Invalid otpauth URI in QR code.');
+      } catch (_e) {
+        // Not a valid URL, fallback
       }
-    } catch (_e) {
-      showToast('Could not parse QR code data.');
+    }
+
+    const clean = trimmed.replace(/\s+/g, '').toUpperCase();
+    if (/^[A-Z2-7=]+$/.test(clean) && clean.length >= 8) {
+      setSecret(clean);
+      showToast('Captured secret key from QR code!');
+    } else {
+      showToast('Scanned QR code data could not be parsed.');
     }
   }, [showToast]);
 
   const handleSecretChange = (val: string) => {
     setSecret(val);
-    if (val.startsWith('otpauth://')) {
+    if (val.toLowerCase().startsWith('otpauth://')) {
       parseOtpAuthUri(val);
     }
   };
 
+  // Robust multi-pass QR code decoder from image
+  const decodeQRFromImage = useCallback(async (img: HTMLImageElement): Promise<string | null> => {
+    // Pass 1: Native BarcodeDetector (Chrome, Edge, Safari 17+, Android)
+    if ('BarcodeDetector' in window) {
+      try {
+        const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
+        const barcodes = await detector.detect(img);
+        if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+          return barcodes[0].rawValue;
+        }
+      } catch (_e) {
+        // Fallback to jsQR
+      }
+    }
+
+    const naturalWidth = img.naturalWidth || img.width;
+    const naturalHeight = img.naturalHeight || img.height;
+    if (!naturalWidth || !naturalHeight) return null;
+
+    const maxDim = Math.max(naturalWidth, naturalHeight);
+    const scales = [1.0, 1600 / maxDim, 1200 / maxDim, 800 / maxDim, 500 / maxDim];
+    const uniqueScales = Array.from(new Set(scales.map((s) => Math.min(1.0, s)))).filter((s) => s > 0);
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+
+    // Pass 2: Multi-resolution scaling
+    for (const scale of uniqueScales) {
+      const targetW = Math.round(naturalWidth * scale);
+      const targetH = Math.round(naturalHeight * scale);
+      canvas.width = targetW;
+      canvas.height = targetH;
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+
+      const imgData = ctx.getImageData(0, 0, targetW, targetH);
+      const code = jsQR(imgData.data, targetW, targetH, {
+        inversionAttempts: 'attemptBoth',
+      });
+      if (code && code.data) {
+        return code.data;
+      }
+    }
+
+    // Pass 3: Center cropped region (for full screenshot photos)
+    if (naturalWidth > 300 && naturalHeight > 300) {
+      for (const cropRatio of [0.75, 0.5]) {
+        const cropW = Math.round(naturalWidth * cropRatio);
+        const cropH = Math.round(naturalHeight * cropRatio);
+        const startX = Math.round((naturalWidth - cropW) / 2);
+        const startY = Math.round((naturalHeight - cropH) / 2);
+
+        canvas.width = cropW;
+        canvas.height = cropH;
+        ctx.drawImage(img, startX, startY, cropW, cropH, 0, 0, cropW, cropH);
+
+        const imgData = ctx.getImageData(0, 0, cropW, cropH);
+        const code = jsQR(imgData.data, cropW, cropH, {
+          inversionAttempts: 'attemptBoth',
+        });
+        if (code && code.data) {
+          return code.data;
+        }
+      }
+    }
+
+    return null;
+  }, []);
+
   const handleFile = useCallback((file: File) => {
+    if (!file.type.startsWith('image/')) {
+      showToast('Please select a valid image file.');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0);
-          const imgData = ctx.getImageData(0, 0, img.width, img.height);
-          const qrCode = jsQR(imgData.data, img.width, img.height);
-          if (qrCode) {
-            parseOtpAuthUri(qrCode.data);
+      img.onload = async () => {
+        try {
+          const result = await decodeQRFromImage(img);
+          if (result) {
+            parseOtpAuthUri(result);
           } else {
-            showToast('No QR code detected in that image.');
+            showToast('No QR code detected. Please ensure the QR code is clearly visible in the image.');
           }
+        } catch (_err) {
+          showToast('Failed to process image for QR code.');
         }
+      };
+      img.onerror = () => {
+        showToast('Could not load image file.');
       };
       img.src = e.target?.result as string;
     };
     reader.readAsDataURL(file);
-  }, [parseOtpAuthUri, showToast]);
+  }, [decodeQRFromImage, parseOtpAuthUri, showToast]);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -201,59 +283,106 @@ export function AddTokenPage() {
     setIsCameraActive(false);
   }, []);
 
-  const scanVideoFrame = useCallback(() => {
-    if (!videoRef.current || videoRef.current.readyState < 2) {
-      animationFrameRef.current = requestAnimationFrame(() => scanVideoFrameRef.current());
-      return;
-    }
+  // Camera video stream and scanning loop lifecycle
+  useEffect(() => {
+    if (!isCameraActive) return;
 
-    const video = videoRef.current;
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    if (ctx && canvas.width > 0 && canvas.height > 0) {
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const qr = jsQR(imgData.data, canvas.width, canvas.height);
-      if (qr && qr.data) {
-        stopCamera();
-        parseOtpAuthUri(qr.data);
-        return;
+    let activeStream: MediaStream | null = null;
+    let animFrame: number | null = null;
+    let isCancelled = false;
+
+    async function initCamera() {
+      setCameraError(null);
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        });
+
+        if (isCancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
+        activeStream = stream;
+        streamRef.current = stream;
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.setAttribute('playsinline', 'true');
+          await videoRef.current.play();
+
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+          let detector: any = null;
+          if ('BarcodeDetector' in window) {
+            try {
+              detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
+            } catch (_e) {
+              detector = null;
+            }
+          }
+
+          const scanLoop = async () => {
+            if (isCancelled || !videoRef.current) return;
+            const video = videoRef.current;
+
+            if (video.readyState >= 2) {
+              if (detector) {
+                try {
+                  const barcodes = await detector.detect(video);
+                  if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+                    stopCamera();
+                    parseOtpAuthUri(barcodes[0].rawValue);
+                    return;
+                  }
+                } catch (_e) {
+                  // Fallback to canvas jsQR
+                }
+              }
+
+              if (ctx && video.videoWidth > 0 && video.videoHeight > 0) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const qr = jsQR(imgData.data, canvas.width, canvas.height, {
+                  inversionAttempts: 'attemptBoth',
+                });
+                if (qr && qr.data) {
+                  stopCamera();
+                  parseOtpAuthUri(qr.data);
+                  return;
+                }
+              }
+            }
+
+            animFrame = requestAnimationFrame(scanLoop);
+          };
+
+          animFrame = requestAnimationFrame(scanLoop);
+        }
+      } catch (_err: any) {
+        setCameraError('Camera access unavailable or denied. Please check browser permissions or upload an image.');
+        setIsCameraActive(false);
       }
     }
-    animationFrameRef.current = requestAnimationFrame(() => scanVideoFrameRef.current());
-  }, [parseOtpAuthUri, stopCamera]);
 
-  useEffect(() => {
-    scanVideoFrameRef.current = scanVideoFrame;
-  }, [scanVideoFrame]);
+    initCamera();
 
-  const startCamera = async () => {
-    setCameraError(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.setAttribute('playsinline', 'true');
-        await videoRef.current.play();
-        setIsCameraActive(true);
-        animationFrameRef.current = requestAnimationFrame(() => scanVideoFrameRef.current());
-      }
-    } catch (_err: any) {
-      setCameraError('Camera access unavailable. You can use photo capture or browse for an image below.');
-    }
-  };
-
-  // Clean up camera stream on unmount
-  useEffect(() => {
     return () => {
-      stopCamera();
+      isCancelled = true;
+      if (animFrame) cancelAnimationFrame(animFrame);
+      if (activeStream) {
+        activeStream.getTracks().forEach((t) => t.stop());
+      }
     };
-  }, [stopCamera]);
+  }, [isCameraActive, parseOtpAuthUri, stopCamera]);
+
+  const startCamera = () => {
+    setCameraError(null);
+    setIsCameraActive(true);
+  };
 
   // Listen for clipboard image paste on QR tab
   useEffect(() => {
