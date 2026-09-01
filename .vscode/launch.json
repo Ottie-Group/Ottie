@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch Ottie",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}",
+      "env": {
+        "OTTIE_INSECURE_COOKIES": "1",
+        "OTTIE_LISTEN_ADDR": "127.0.0.1:8080"
+      },
+      "preLaunchTask": "Build Ottie Executable"
+    }
+  ]
+}
