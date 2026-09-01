@@ -1,4 +1,8 @@
+export type ThemeName = 'emerald' | 'river';
+
 export interface OttieTheme {
+  name: ThemeName;
+  label: string;
   colors: {
     bgPage: string;
     gridLine: string;

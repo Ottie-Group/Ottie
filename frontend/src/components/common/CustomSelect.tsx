@@ -51,6 +51,7 @@ const ArrowIcon = styled.svg<{ isOpen: boolean }>`
   transform: translateY(-50%) ${({ isOpen }) => (isOpen ? 'rotate(180deg)' : 'rotate(0deg)')};
   transition: transform 0.2s ease;
   pointer-events: none;
+  stroke: ${({ theme }) => theme.colors.primary};
 `;
 
 const DropdownMenu = styled.div`
@@ -74,8 +75,8 @@ const OptionItem = styled.div<{ isSelected: boolean; isDisabled?: boolean }>`
   font-size: 14px;
   font-weight: ${({ isSelected }) => (isSelected ? '700' : '600')};
   color: ${({ isSelected, isDisabled, theme }) =>
-    isDisabled ? '#94a3b8' : isSelected ? theme.colors.primary : theme.colors.textDark};
-  background: ${({ isSelected, isDisabled }) => (isDisabled ? 'transparent' : isSelected ? '#ecfdf5' : 'transparent')};
+    isDisabled ? theme.colors.textDim : isSelected ? theme.colors.primary : theme.colors.textDark};
+  background: ${({ isSelected, isDisabled, theme }) => (isDisabled ? 'transparent' : isSelected ? theme.colors.primaryLight : 'transparent')};
   cursor: ${({ isDisabled }) => (isDisabled ? 'not-allowed' : 'pointer')};
   opacity: ${({ isDisabled }) => (isDisabled ? 0.6 : 1)};
   display: flex;
@@ -85,8 +86,8 @@ const OptionItem = styled.div<{ isSelected: boolean; isDisabled?: boolean }>`
   transition: background 0.12s ease;
 
   &:hover {
-    ${({ isDisabled, isSelected }) =>
-      !isDisabled && `background: ${isSelected ? '#d1fae5' : '#f8faf7'};`}
+    ${({ isDisabled, isSelected, theme }) =>
+      !isDisabled && `background: ${isSelected ? theme.colors.primaryBorder : theme.colors.primaryLight};`}
   }
 `;
 
@@ -132,7 +133,7 @@ export function CustomSelect({ options, value, onChange, disabled }: CustomSelec
         }}
       >
         <span>{selectedOption ? selectedOption.label : 'Select...'}</span>
-        <ArrowIcon isOpen={isOpen} width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="#059669" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <ArrowIcon isOpen={isOpen} width="16" height="16" viewBox="0 0 20 20" fill="none" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M6 8l4 4 4-4" />
         </ArrowIcon>
       </SelectTrigger>

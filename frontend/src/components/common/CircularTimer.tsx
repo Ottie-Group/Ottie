@@ -1,4 +1,5 @@
 import styled from '@emotion/styled';
+import { useTheme } from '@emotion/react';
 
 const CIRCLE_RADIUS = 14;
 const CIRCLE_CIRCUMFERENCE = 2 * Math.PI * CIRCLE_RADIUS; // ~87.96
@@ -50,11 +51,12 @@ const TimerNum = styled.span<{ textColor: string }>`
 `;
 
 export function CircularTimer({ secondsRemaining }: CircularTimerProps) {
+  const theme = useTheme();
   const isDanger = secondsRemaining <= 5;
   const isWarning = secondsRemaining <= 10 && !isDanger;
 
-  let strokeColor = '#10b981'; // Emerald
-  let textColor = '#059669';
+  let strokeColor = theme.colors.primary;
+  let textColor = theme.colors.primary;
 
   if (isDanger) {
     strokeColor = '#ef4444';

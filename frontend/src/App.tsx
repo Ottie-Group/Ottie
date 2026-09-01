@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from '@emotion/react';
-import { theme } from './theme';
 import { GlobalStyles } from './theme/GlobalStyles';
 import { useAuthStore } from './store/useAuthStore';
+import { useThemeStore } from './store/useThemeStore';
 import { Toast } from './components/common/Toast';
 import { ProtectedRoute, PublicOnlyRoute, SetupRoute, AdminRoute } from './routes/guards';
 
@@ -20,13 +20,14 @@ import { SettingsPage } from './pages/SettingsPage';
 
 export function App() {
   const fetchSession = useAuthStore((state) => state.fetchSession);
+  const currentTheme = useThemeStore((state) => state.currentTheme);
 
   useEffect(() => {
     fetchSession();
   }, [fetchSession]);
 
   return (
-    <ThemeProvider theme={theme}>
+    <ThemeProvider theme={currentTheme}>
       <GlobalStyles />
       <Toast />
       <BrowserRouter>

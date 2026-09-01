@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
@@ -316,11 +317,23 @@ func isSMTPConfigured() bool {
 	return os.Getenv("SMTP_HOST") != "" || os.Getenv("OTTIE_SMTP_HOST") != "" || os.Getenv("SMTP_SERVER") != ""
 }
 
+func isSMSGateConfigured() bool {
+	return (os.Getenv("SMSGATE_LOGIN") != "" && os.Getenv("SMSGATE_PASSWORD") != "") ||
+		(os.Getenv("SMSGATE_USERNAME") != "" && os.Getenv("SMSGATE_PASSWORD") != "") ||
+		os.Getenv("SMSGATE_TOKEN") != "" ||
+		os.Getenv("SMSGATE_API_KEY") != "" ||
+		os.Getenv("SMSGATE_URL") != "" ||
+		os.Getenv("SMSGATE_SERVER") != ""
+}
+
+func isTwilioConfigured() bool {
+	return os.Getenv("TWILIO_ACCOUNT_SID") != "" && os.Getenv("TWILIO_AUTH_TOKEN") != "" && os.Getenv("TWILIO_PHONE_NUMBER") != ""
+}
+
 func isSMSConfigured() bool {
-	return (os.Getenv("TWILIO_ACCOUNT_SID") != "" && os.Getenv("TWILIO_AUTH_TOKEN") != "") ||
+	return isSMSGateConfigured() || isTwilioConfigured() ||
 		os.Getenv("SMS_API_KEY") != "" ||
-		os.Getenv("OTTIE_SMS_GATEWAY") != "" ||
-		os.Getenv("TWILIO_PHONE_NUMBER") != ""
+		os.Getenv("OTTIE_SMS_GATEWAY") != ""
 }
 
 func sendEmailOTP(toEmail, code string) error {
@@ -365,6 +378,64 @@ func sendEmailOTP(toEmail, code string) error {
 	return smtp.SendMail(addr, auth, from, []string{toEmail}, msg)
 }
 
+func sendSMSGateSMS(toPhone, code string) error {
+	serverURL := os.Getenv("SMSGATE_URL")
+	if serverURL == "" {
+		serverURL = os.Getenv("SMSGATE_SERVER")
+	}
+	if serverURL == "" {
+		serverURL = "https://api.sms-gate.app/3rdparty/v1/messages"
+	} else if !strings.Contains(serverURL, "/messages") && !strings.Contains(serverURL, "/message") {
+		serverURL = strings.TrimSuffix(serverURL, "/") + "/3rdparty/v1/messages"
+	}
+
+	login := os.Getenv("SMSGATE_LOGIN")
+	if login == "" {
+		login = os.Getenv("SMSGATE_USERNAME")
+	}
+	password := os.Getenv("SMSGATE_PASSWORD")
+	token := os.Getenv("SMSGATE_TOKEN")
+	if token == "" {
+		token = os.Getenv("SMSGATE_API_KEY")
+	}
+
+	payload := map[string]any{
+		"textMessage": map[string]string{
+			"text": fmt.Sprintf("Your Ottie verification passcode is: %s (expires in 5 mins)", code),
+		},
+		"phoneNumbers": []string{toPhone},
+	}
+
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, serverURL, bytes.NewReader(jsonBytes))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if login != "" && password != "" {
+		req.SetBasicAuth(login, password)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("SMSGate returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func sendTwilioSMS(toPhone, code string) error {
 	accountSid := os.Getenv("TWILIO_ACCOUNT_SID")
 	authToken := os.Getenv("TWILIO_AUTH_TOKEN")
@@ -400,6 +471,16 @@ func sendTwilioSMS(toPhone, code string) error {
 	return nil
 }
 
+func sendSMSOTP(toPhone, code string) error {
+	if isSMSGateConfigured() {
+		return sendSMSGateSMS(toPhone, code)
+	}
+	if isTwilioConfigured() {
+		return sendTwilioSMS(toPhone, code)
+	}
+	return errors.New("no SMS provider configured")
+}
+
 func send2FACode(method, destination, code string) {
 	if method == "email" && isSMTPConfigured() {
 		go func() {
@@ -411,10 +492,14 @@ func send2FACode(method, destination, code string) {
 		}()
 	} else if method == "sms" && isSMSConfigured() {
 		go func() {
-			if err := sendTwilioSMS(destination, code); err != nil {
-				log.Printf("[Ottie Twilio Warning] Could not deliver SMS to %s: %v. (Passcode: %s is logged for access)", destination, err, code)
+			providerName := "SMSGate"
+			if !isSMSGateConfigured() && isTwilioConfigured() {
+				providerName = "Twilio"
+			}
+			if err := sendSMSOTP(destination, code); err != nil {
+				log.Printf("[Ottie %s SMS Warning] Could not deliver SMS to %s: %v. (Passcode: %s is logged for access)", providerName, destination, err, code)
 			} else {
-				log.Printf("[Ottie Twilio Success] Dispatched 2FA SMS to %s", destination)
+				log.Printf("[Ottie %s SMS Success] Dispatched 2FA SMS to %s", providerName, destination)
 			}
 		}()
 	}

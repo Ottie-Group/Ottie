@@ -1,4 +1,5 @@
 import styled from '@emotion/styled';
+import { useTheme } from '@emotion/react';
 
 const HeaderContainer = styled.header`
   text-align: center;
@@ -19,7 +20,7 @@ const MascotImg = styled.img`
   width: 38px;
   height: 38px;
   border-radius: 50%;
-  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 `;
 
 const RiverWaveAccent = styled.div`
@@ -31,6 +32,8 @@ const RiverWaveAccent = styled.div`
 `;
 
 export function BrandHeader() {
+  const theme = useTheme();
+
   return (
     <HeaderContainer>
       <Title>
@@ -38,17 +41,17 @@ export function BrandHeader() {
       </Title>
       <RiverWaveAccent>
         <svg width="84" height="16" viewBox="0 0 84 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          {/* Top Emerald River Wave */}
+          {/* Top River Wave */}
           <path
             d="M4 5C10 1 16 9 22 5C28 1 34 9 40 5C46 1 52 9 58 5C64 1 70 9 76 5C79 3 81 4 82 5"
-            stroke="#059669"
+            stroke={theme.colors.primary}
             strokeWidth="2.5"
             strokeLinecap="round"
           />
-          {/* Bottom Soft Mint River Wave */}
+          {/* Bottom Ripple Wave */}
           <path
             d="M12 12C18 8 24 16 30 12C36 8 42 16 48 12C54 8 60 16 66 12C70 9 72 10.5 74 12"
-            stroke="#86efac"
+            stroke={theme.colors.primaryBorder}
             strokeWidth="2.0"
             strokeLinecap="round"
           />

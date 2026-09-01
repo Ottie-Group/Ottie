@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuthStore } from '../store/useAuthStore';
 import { useToastStore } from '../store/useToastStore';
+import { useThemeStore } from '../store/useThemeStore';
 import { BrandHeader } from '../components/common/BrandHeader';
 import { Button } from '../components/common/Button';
 import { FormGroup, Label, Input, HelpText } from '../components/common/Input';
@@ -16,6 +17,9 @@ export function SettingsPage() {
   const twoFactorConfig = useAuthStore((state) => state.twoFactorConfig);
   const fetchSession = useAuthStore((state) => state.fetchSession);
   const showToast = useToastStore((state) => state.showToast);
+
+  const themeName = useThemeStore((state) => state.themeName);
+  const setTheme = useThemeStore((state) => state.setTheme);
 
   // Password state
   const [currentPassword, setCurrentPassword] = useState('');
@@ -228,7 +232,7 @@ export function SettingsPage() {
 
           {!any2FAConfigured && (
             <Styled.UnconfiguredNotice>
-              <strong>⚠️ 2FA Providers Not Configured:</strong> Neither Email (SMTP) nor Text/Phone (SMS) is configured in your server environment variables (`.env`). Configure `SMTP_HOST` or SMS credentials to enable 2FA options.
+              <strong>2FA Providers Not Configured:</strong> Neither Email (SMTP) nor Text/Phone (SMS) is configured in your server environment variables (`.env`). Configure `SMTP_HOST` or SMS credentials (`SMSGATE_LOGIN` or `TWILIO_ACCOUNT_SID`) to enable 2FA options.
             </Styled.UnconfiguredNotice>
           )}
 
@@ -298,11 +302,11 @@ export function SettingsPage() {
 
         <Styled.SectionDivider />
 
-        {/* 12 Recovery Pebbles */}
+        {/* 12 Recovery Words */}
         <div>
-          <Styled.SectionTitle>12 Recovery Pebbles</Styled.SectionTitle>
+          <Styled.SectionTitle>12 Recovery Words</Styled.SectionTitle>
           <Styled.SectionDesc>
-            Your zero-knowledge recovery pebble phrase for emergency key reconstruction.
+            Your zero-knowledge recovery words for emergency key reconstruction.
           </Styled.SectionDesc>
 
           {recoveryKey ? (
@@ -334,6 +338,60 @@ export function SettingsPage() {
             </svg>
             Export Stash Backup (JSON)
           </Button>
+        </div>
+
+        <Styled.SectionDivider />
+
+        {/* Den Theme Appearance */}
+        <div>
+          <Styled.SectionTitle>Den Appearance & Color Theme</Styled.SectionTitle>
+          <Styled.SectionDesc>
+            Personalize your Ottie experience by switching between classic riverbank moss and fresh flowing river water themes.
+          </Styled.SectionDesc>
+
+          <Styled.ThemeGrid>
+            <Styled.ThemeOptionCard
+              isActive={themeName === 'emerald'}
+              onClick={() => {
+                setTheme('emerald');
+                showToast('Switched to Moss Green theme!');
+              }}
+            >
+              <Styled.ThemePreviewCircle color="#059669" border="#a7f3d0" />
+              <div>
+                <Styled.ThemeOptionTitle>Moss Green</Styled.ThemeOptionTitle>
+                <Styled.ThemeOptionSub>Emerald riverbank green accent</Styled.ThemeOptionSub>
+              </div>
+              {themeName === 'emerald' && (
+                <Styled.ThemeActiveCircle aria-label="Active theme">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                </Styled.ThemeActiveCircle>
+              )}
+            </Styled.ThemeOptionCard>
+
+            <Styled.ThemeOptionCard
+              isActive={themeName === 'river'}
+              onClick={() => {
+                setTheme('river');
+                showToast('Switched to River Blue theme!');
+              }}
+            >
+              <Styled.ThemePreviewCircle color="#0284c7" border="#7dd3fc" />
+              <div>
+                <Styled.ThemeOptionTitle>River Blue</Styled.ThemeOptionTitle>
+                <Styled.ThemeOptionSub>Vibrant blue and fresh river water</Styled.ThemeOptionSub>
+              </div>
+              {themeName === 'river' && (
+                <Styled.ThemeActiveCircle aria-label="Active theme">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                </Styled.ThemeActiveCircle>
+              )}
+            </Styled.ThemeOptionCard>
+          </Styled.ThemeGrid>
         </div>
       </FormCard>
     </AppWrapper>
