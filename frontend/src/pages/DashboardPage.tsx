@@ -278,7 +278,7 @@ export function DashboardPage() {
       {/* Export / Backup Feature Note */}
       <Styled.PurpleBanner>
         <Styled.BannerContent>
-          <h4>Export Pebble Backup</h4>
+          <h4>Export Stash Backup</h4>
           <p>Download a decrypted JSON backup of all your secret pebbles anytime.</p>
           <Styled.BannerLink onClick={() => navigate('/settings')}>
             Manage Vault Backups

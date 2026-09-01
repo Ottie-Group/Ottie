@@ -32,10 +32,11 @@ func setupTestApp(t *testing.T) *App {
 	dekStore := newSessionStore()
 
 	return &App{
-		db:        db,
-		store:     store,
-		dekStore:  dekStore,
-		serverKey: serverKey,
+		db:          db,
+		store:       store,
+		dekStore:    dekStore,
+		serverKey:   serverKey,
+		rateLimiter: NewRateLimiter(100, time.Minute),
 	}
 }
 

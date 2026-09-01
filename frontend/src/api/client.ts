@@ -20,6 +20,7 @@ class ApiClient {
   async request<T = any>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const headers = new Headers(options.headers || {});
     headers.set('Accept', 'application/json');
+    headers.set('X-Requested-With', 'XMLHttpRequest');
 
     if (this.csrfToken && options.method && options.method !== 'GET' && options.method !== 'HEAD') {
       headers.set('X-CSRF-Token', this.csrfToken);
@@ -32,7 +33,7 @@ class ApiClient {
     const response = await fetch(endpoint, {
       ...options,
       headers,
-      credentials: 'same-origin',
+      credentials: 'include',
     });
 
     const csrfHeader = response.headers.get('X-CSRF-Token');

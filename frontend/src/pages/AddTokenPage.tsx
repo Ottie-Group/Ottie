@@ -28,7 +28,6 @@ export function AddTokenPage() {
   const [accountName, setAccountName] = useState('');
   const [categoryChoice, setCategoryChoice] = useState('Personal');
   const [customCategory, setCustomCategory] = useState('');
-  const [confirmCode, setConfirmCode] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -99,7 +98,6 @@ export function AddTokenPage() {
         }
         if (sec) setSecret(sec);
         if (iss) setIssuer(iss);
-        setTab('manual');
         showToast('Scanned QR code successfully!');
       } else {
         showToast('Invalid otpauth URI in QR code.');
@@ -260,7 +258,6 @@ export function AddTokenPage() {
         issuer: issuer.trim(),
         accountName: accountName.trim(),
         category: finalCategory,
-        code: confirmCode.trim(),
       });
       showToast(`Pebble for ${issuer.trim()} added!`);
       navigate('/', { replace: true });
@@ -412,52 +409,32 @@ export function AddTokenPage() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit}>
-          <FormGroup>
-            <Label htmlFor="secret">Secret Key (Base32) or otpauth URI *</Label>
-            <Input
-              id="secret"
-              type="text"
-              placeholder="e.g. JBSWY3DPEHPK3PXP"
-              value={secret}
-              onChange={(e) => handleSecretChange(e.target.value)}
-              required
-            />
-            <HelpText>Paste raw Base32 secret or standard otpauth:// totp uri.</HelpText>
-          </FormGroup>
+        {tab === 'qr' && secret && (
+          <div style={{ background: '#f0fdf4', border: '1.5px solid #86efac', borderRadius: '12px', padding: '12px 16px', marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ color: '#166534', fontWeight: 800, fontSize: '13px' }}>✓ QR Secret Captured</div>
+              <div style={{ fontSize: '12px', color: '#15803d', marginTop: '2px' }}>{issuer || 'Service'} pebble ready to save</div>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={() => { setSecret(''); setIssuer(''); setAccountName(''); }}>
+              Scan Another
+            </Button>
+          </div>
+        )}
 
-          {/* Live Code Preview Card */}
-          {livePreviewCode && (
-            <Styled.LivePreviewCard>
-              <Styled.LivePreviewHeader>
-                <Styled.LiveBadge>
-                  <svg width="10" height="10" viewBox="0 0 100 100" fill="none">
-                    <circle cx="50" cy="50" r="45" fill="#22c55e" />
-                  </svg>
-                  Live Code Preview
-                </Styled.LiveBadge>
-                <span style={{ fontSize: '12px', fontWeight: 700, color: '#166534' }}>
-                  {secondsRemaining}s remaining
-                </span>
-              </Styled.LivePreviewHeader>
-              <Styled.LivePreviewDigits>
-                {livePreviewCode.slice(0, 3)} {livePreviewCode.slice(3)}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    if (livePreviewCode) {
-                      navigator.clipboard.writeText(livePreviewCode);
-                      showToast(`Copied live code ${livePreviewCode} to clipboard!`);
-                    }
-                  }}
-                  title="Copy preview code"
-                >
-                  Copy
-                </Button>
-              </Styled.LivePreviewDigits>
-            </Styled.LivePreviewCard>
+        <form onSubmit={handleSubmit}>
+          {tab === 'manual' && (
+            <FormGroup>
+              <Label htmlFor="secret">Secret Key (Base32) or otpauth URI *</Label>
+              <Input
+                id="secret"
+                type="text"
+                placeholder="e.g. JBSWY3DPEHPK3PXP"
+                value={secret}
+                onChange={(e) => handleSecretChange(e.target.value)}
+                required
+              />
+              <HelpText>Paste raw Base32 secret or standard otpauth:// totp uri.</HelpText>
+            </FormGroup>
           )}
 
           <FormGroup>
@@ -507,28 +484,46 @@ export function AddTokenPage() {
             </FormGroup>
           )}
 
-          <FormGroup>
-            <Label htmlFor="confirmCode">Verification Check (Optional)</Label>
-            <Input
-              id="confirmCode"
-              type="text"
-              isCode={true}
-              placeholder="817270"
-              maxLength={6}
-              value={confirmCode}
-              onChange={(e) => setConfirmCode(e.target.value)}
-            />
-            {livePreviewCode && confirmCode.trim().length === 6 && (
-              <Styled.MatchBadge isMatch={confirmCode.trim() === livePreviewCode}>
-                {confirmCode.trim() === livePreviewCode ? (
-                  <>✓ Code verified! Matches live TOTP calculation</>
-                ) : (
-                  <>⚠️ Passcode does not match current live code ({livePreviewCode})</>
-                )}
-              </Styled.MatchBadge>
-            )}
-            <HelpText>Confirm your secret produces the expected passcode before saving.</HelpText>
-          </FormGroup>
+          {/* Prominent Live Verification Passcode for Service Setup */}
+          {livePreviewCode && (
+            <Styled.LivePreviewCard style={{ marginTop: '8px', marginBottom: '22px' }}>
+              <Styled.LivePreviewHeader>
+                <Styled.LiveBadge>
+                  <svg width="10" height="10" viewBox="0 0 100 100" fill="none">
+                    <circle cx="50" cy="50" r="45" fill="#22c55e" />
+                  </svg>
+                  Setup Verification Code
+                </Styled.LiveBadge>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#166534' }}>
+                  {secondsRemaining}s remaining
+                </span>
+              </Styled.LivePreviewHeader>
+              <Styled.LivePreviewDigits>
+                {livePreviewCode.slice(0, 3)} {livePreviewCode.slice(3)}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (livePreviewCode) {
+                      navigator.clipboard.writeText(livePreviewCode);
+                      showToast(`Copied verification code ${livePreviewCode} to clipboard!`);
+                    }
+                  }}
+                  title="Copy verification code"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px' }}>
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                  Copy Code
+                </Button>
+              </Styled.LivePreviewDigits>
+              <p style={{ fontSize: '12px', color: '#15803d', marginTop: '8px', lineHeight: 1.4, margin: '8px 0 0' }}>
+                Enter this 6-digit code into <strong>{issuer.trim() || 'your service'}</strong> to complete 2FA setup on their end.
+              </p>
+            </Styled.LivePreviewCard>
+          )}
 
           <Button type="submit" variant="primary" fullWidth disabled={isSubmitting}>
             {isSubmitting ? 'Securing Pebble in Den...' : 'Save Pebble to Den'}

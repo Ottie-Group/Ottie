@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/sessions"
 )
@@ -31,9 +33,27 @@ func securityHeaders(next http.Handler) http.Handler {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self';")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Cross-Origin-Resource-Policy", "same-origin")
+		h.Set("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
 		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+
+		// Protect mutating API endpoints against CSRF and cross-origin attacks
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete || r.Method == http.MethodPatch {
+				if !isSameOrigin(r) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					w.Write([]byte(`{"error":"Cross-origin request blocked for security"}`))
+					return
+				}
+				// Limit payload size to 1MB max to prevent resource exhaustion attacks
+				r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+			}
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -84,29 +104,83 @@ func main() {
 				log.Fatalf("failed to generate random session secret: %v", err)
 			}
 			_ = os.WriteFile(secretFilePath, secretBytes, 0600)
-			log.Println("🔑 Generated persistent session secret in data/.session_secret")
+			log.Println("Generated persistent session secret in data/.session_secret")
+		}
+	}
+
+	maxAge := 86400 * 7 // Default: 7 days (604800 seconds)
+	if envMaxAge := os.Getenv("OTTIE_SESSION_MAX_AGE"); envMaxAge != "" {
+		if sec, err := strconv.Atoi(envMaxAge); err == nil && sec > 0 {
+			maxAge = sec
+		} else if strings.HasSuffix(envMaxAge, "d") {
+			daysStr := strings.TrimSuffix(envMaxAge, "d")
+			if days, err := strconv.Atoi(daysStr); err == nil && days > 0 {
+				maxAge = days * 86400
+			}
+		} else if d, err := time.ParseDuration(envMaxAge); err == nil && d > 0 {
+			maxAge = int(d.Seconds())
+		}
+	} else if envMaxAgeSec := os.Getenv("OTTIE_SESSION_MAX_AGE_SECONDS"); envMaxAgeSec != "" {
+		if sec, err := strconv.Atoi(envMaxAgeSec); err == nil && sec > 0 {
+			maxAge = sec
+		}
+	}
+
+	// Cookie security flag: Defaults to false for plain HTTP local dev, set OTTIE_INSECURE_COOKIES=0 or OTTIE_SECURE_COOKIES=1 for HTTPS in production
+	secureCookie := false
+	if envInsecure := os.Getenv("OTTIE_INSECURE_COOKIES"); envInsecure != "" {
+		if envInsecure == "0" || strings.EqualFold(envInsecure, "false") {
+			secureCookie = true
+		} else if envInsecure == "1" || strings.EqualFold(envInsecure, "true") {
+			secureCookie = false
+		}
+	} else if envSecure := os.Getenv("OTTIE_SECURE_COOKIES"); envSecure != "" {
+		if envSecure == "1" || strings.EqualFold(envSecure, "true") {
+			secureCookie = true
+		} else if envSecure == "0" || strings.EqualFold(envSecure, "false") {
+			secureCookie = false
 		}
 	}
 
 	cookieStore := sessions.NewCookieStore(secretBytes)
 	cookieStore.Options = &sessions.Options{
 		Path:     "/",
-		MaxAge:   86400 * 7, // 7 days
+		MaxAge:   maxAge,
 		HttpOnly: true,
-		Secure:   false, // Set to true if TLS terminated at Ottie level
+		Secure:   secureCookie,
 		SameSite: http.SameSiteLaxMode,
 	}
 
 	dekStore := newSessionStore()
+	rateLimiter := NewRateLimiter(20, time.Minute)
 
-	serverKey := make([]byte, 32)
-	copy(serverKey, secretBytes[:32])
+	serverKeyEnv := os.Getenv("APP_SERVER_KEY")
+	if serverKeyEnv == "" {
+		serverKeyEnv = os.Getenv("OTTIE_SERVER_KEY")
+	}
+
+	var serverKey []byte
+	if serverKeyEnv != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(serverKeyEnv); err == nil && len(decoded) >= 32 {
+			serverKey = decoded[:32]
+		} else {
+			serverKey = []byte(serverKeyEnv)
+			for len(serverKey) < 32 {
+				serverKey = append(serverKey, serverKey...)
+			}
+			serverKey = serverKey[:32]
+		}
+	} else {
+		serverKey = make([]byte, 32)
+		copy(serverKey, secretBytes[:32])
+	}
 
 	app := &App{
-		db:        db,
-		store:     cookieStore,
-		dekStore:  dekStore,
-		serverKey: serverKey,
+		db:          db,
+		store:       cookieStore,
+		dekStore:    dekStore,
+		serverKey:   serverKey,
+		rateLimiter: rateLimiter,
 	}
 
 	mux := http.NewServeMux()
@@ -167,7 +241,7 @@ func main() {
 		http.NotFound(w, r)
 	})
 
-	// React SPA Vite Assets (/assets/*)
+	// React Assets (/assets/*)
 	mux.HandleFunc("GET /assets/", func(w http.ResponseWriter, r *http.Request) {
 		relPath := strings.TrimPrefix(r.URL.Path, "/")
 		ext := filepath.Ext(relPath)
@@ -195,7 +269,7 @@ func main() {
 		http.NotFound(w, r)
 	})
 
-	// React Single Page App handler (serving index.html for all client routes)
+	// React handler
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		// If request is for an existing static file at root like favicon.svg or ottie.svg
 		if r.URL.Path == "/ottie.svg" || r.URL.Path == "/favicon.svg" {
@@ -210,7 +284,7 @@ func main() {
 			}
 		}
 
-		// Serve React SPA index.html
+		// Serve React index.html
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if data, err := os.ReadFile(filepath.Join("frontend", "dist", "index.html")); err == nil {
 			w.Write(data)
@@ -229,6 +303,6 @@ func main() {
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
-	log.Printf("🦦 Ottie TOTP Manager (React + TypeScript + Emotion) is swimming at http://%s", addr)
+	log.Printf("🦦 Ottie is swimming at http://%s", addr)
 	log.Fatal(http.ListenAndServe(addr, securityHeaders(mux)))
 }

@@ -10,6 +10,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/smtp"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -55,10 +57,11 @@ func (s *SessionStore) Delete(sessionID string) {
 }
 
 type App struct {
-	db        *sql.DB
-	store     *sessions.CookieStore
-	dekStore  *SessionStore
-	serverKey []byte
+	db          *sql.DB
+	store       *sessions.CookieStore
+	dekStore    *SessionStore
+	serverKey   []byte
+	rateLimiter *RateLimiter
 }
 
 func clientIP(r *http.Request) string {
@@ -320,6 +323,103 @@ func isSMSConfigured() bool {
 		os.Getenv("TWILIO_PHONE_NUMBER") != ""
 }
 
+func sendEmailOTP(toEmail, code string) error {
+	host := os.Getenv("SMTP_HOST")
+	if host == "" {
+		host = os.Getenv("OTTIE_SMTP_HOST")
+	}
+	if host == "" {
+		host = os.Getenv("SMTP_SERVER")
+	}
+	if host == "" {
+		return errors.New("no SMTP host configured")
+	}
+
+	port := os.Getenv("SMTP_PORT")
+	if port == "" {
+		port = "587"
+	}
+	user := os.Getenv("SMTP_USER")
+	password := os.Getenv("SMTP_PASSWORD")
+	from := os.Getenv("SMTP_FROM")
+	if from == "" {
+		from = user
+	}
+	if from == "" {
+		from = "noreply@ottie.local"
+	}
+
+	addr := net.JoinHostPort(host, port)
+	subject := "Subject: [Ottie] Your Verification Passcode\r\n"
+	fromHeader := fmt.Sprintf("From: %s\r\n", from)
+	toHeader := fmt.Sprintf("To: %s\r\n", toEmail)
+	mimeHeader := "MIME-version: 1.0;\r\nContent-Type: text/plain; charset=\"UTF-8\";\r\n\r\n"
+	body := fmt.Sprintf("Hello,\r\n\r\nYour Ottie login verification passcode is:\r\n\r\n   %s\r\n\r\nThis passcode expires in 5 minutes.\r\n", code)
+	msg := []byte(fromHeader + toHeader + subject + mimeHeader + body)
+
+	var auth smtp.Auth
+	if user != "" && password != "" {
+		auth = smtp.PlainAuth("", user, password, host)
+	}
+
+	return smtp.SendMail(addr, auth, from, []string{toEmail}, msg)
+}
+
+func sendTwilioSMS(toPhone, code string) error {
+	accountSid := os.Getenv("TWILIO_ACCOUNT_SID")
+	authToken := os.Getenv("TWILIO_AUTH_TOKEN")
+	fromPhone := os.Getenv("TWILIO_PHONE_NUMBER")
+
+	if accountSid == "" || authToken == "" || fromPhone == "" {
+		return errors.New("incomplete Twilio SMS credentials")
+	}
+
+	apiURL := fmt.Sprintf("https://api.twilio.com/2010-04-01/Accounts/%s/Messages.json", accountSid)
+	data := url.Values{}
+	data.Set("To", toPhone)
+	data.Set("From", fromPhone)
+	data.Set("Body", fmt.Sprintf("Your Ottie verification passcode is: %s (expires in 5 mins)", code))
+
+	req, err := http.NewRequest(http.MethodPost, apiURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(accountSid, authToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("twilio API returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func send2FACode(method, destination, code string) {
+	if method == "email" && isSMTPConfigured() {
+		go func() {
+			if err := sendEmailOTP(destination, code); err != nil {
+				log.Printf("[Ottie SMTP Warning] Could not deliver email to %s: %v. (Passcode: %s is logged for access)", destination, err, code)
+			} else {
+				log.Printf("[Ottie SMTP Success] Dispatched 2FA code to %s", destination)
+			}
+		}()
+	} else if method == "sms" && isSMSConfigured() {
+		go func() {
+			if err := sendTwilioSMS(destination, code); err != nil {
+				log.Printf("[Ottie Twilio Warning] Could not deliver SMS to %s: %v. (Passcode: %s is logged for access)", destination, err, code)
+			} else {
+				log.Printf("[Ottie Twilio Success] Dispatched 2FA SMS to %s", destination)
+			}
+		}()
+	}
+}
+
 func (a *App) handleApiMe(w http.ResponseWriter, r *http.Request) {
 	count, err := countUsers(a.db)
 	if err == nil && count == 0 {
@@ -422,11 +522,16 @@ func (a *App) handleApiAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"accounts": dtos,
+	"accounts": dtos,
 	})
 }
 
 func (a *App) handleApiSetup(w http.ResponseWriter, r *http.Request) {
+	if a.rateLimiter != nil && !a.rateLimiter.Allow(getClientIP(r)) {
+		writeJSONError(w, http.StatusTooManyRequests, "Too many setup attempts. Please wait a minute and try again.")
+		return
+	}
+
 	count, err := countUsers(a.db)
 	if err == nil && count > 0 {
 		writeJSONError(w, http.StatusBadRequest, "Setup has already been completed.")
@@ -454,15 +559,39 @@ func (a *App) handleApiSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	salt, _ := GenerateSalt()
-	kek, _ := DeriveKEK(password, salt)
-	dek, _ := GenerateDEK()
-	wrappedDEK, _ := WrapDEK(dek, kek)
-	pwHash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-
-	userID, err := createUserWithDEK(a.db, username, string(pwHash), "admin", wrappedDEK, salt)
+	salt, err := GenerateSalt()
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "Failed to create user: "+err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "Crypto error generating salt.")
+		return
+	}
+
+	kek, err := DeriveKEK(password, salt)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Crypto error deriving KEK.")
+		return
+	}
+
+	dek, err := GenerateDEK()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Crypto error generating DEK.")
+		return
+	}
+
+	encDEK, err := WrapDEK(dek, kek)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Crypto error wrapping DEK.")
+		return
+	}
+
+	pwHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Error hashing password.")
+		return
+	}
+
+	uid, err := createUserWithDEK(a.db, username, string(pwHash), "admin", encDEK, salt)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to create admin user.")
 		return
 	}
 
@@ -471,35 +600,55 @@ func (a *App) handleApiSetup(w http.ResponseWriter, r *http.Request) {
 		recSalt, _ := GenerateSalt()
 		recKEK, _ := DeriveKEK(NormalizePhrase(phrase), recSalt)
 		recEncDEK, _ := WrapDEK(dek, recKEK)
-		_ = updateUserRecoveryData(a.db, userID, recEncDEK, recSalt, "")
+		_ = updateUserRecoveryData(a.db, uid, recEncDEK, recSalt, "")
 	}
 
 	sess, _ := a.store.Get(r, sessionName)
-	sid := newCSRFToken()
-	a.dekStore.Set(sid, dek)
-	encCookieDEK, _ := EncryptAESGCM(dek, a.serverKey)
-
-	sess.Values["user_id"] = userID
-	sess.Values["username"] = username
-	sess.Values["role"] = "admin"
-	sess.Values["session_token"] = sid
-	sess.Values["enc_dek"] = encCookieDEK
+	sess.Values["setup_user_id"] = uid
+	sess.Values["setup_dek"] = dek
 	sess.Values["new_recovery_phrase"] = phrase
 	sess.Save(r, w)
 
-	updateLastLogin(a.db, userID)
-
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":     true,
-		"recoveryKey": phrase,
-		"words":       strings.Fields(phrase),
+		"success":        true,
+		"recoveryPhrase": phrase,
+		"recoveryKey":    phrase,
+		"words":          strings.Fields(phrase),
 	})
 }
 
 func (a *App) handleApiSetupConfirm(w http.ResponseWriter, r *http.Request) {
 	sess, _ := a.store.Get(r, sessionName)
+	uid, _ := sess.Values["setup_user_id"].(int64)
+	dek, _ := sess.Values["setup_dek"].([]byte)
+
+	if uid == 0 || len(dek) != 32 {
+		writeJSONError(w, http.StatusBadRequest, "Invalid setup session.")
+		return
+	}
+
+	sid := newCSRFToken()
+	a.dekStore.Set(sid, dek)
+	encCookieDEK, _ := EncryptAESGCM(dek, a.serverKey)
+
+	delete(sess.Values, "setup_user_id")
+	delete(sess.Values, "setup_dek")
 	delete(sess.Values, "new_recovery_phrase")
+
+	token, _ := sess.Values["csrf"].(string)
+	if token == "" {
+		token = newCSRFToken()
+		sess.Values["csrf"] = token
+	}
+
+	sess.Values["user_id"] = uid
+	sess.Values["username"] = "admin"
+	sess.Values["role"] = "admin"
+	sess.Values["session_token"] = sid
+	sess.Values["enc_dek"] = encCookieDEK
 	sess.Save(r, w)
+
+	updateLastLogin(a.db, uid)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
@@ -507,6 +656,11 @@ func (a *App) handleApiSetupConfirm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if a.rateLimiter != nil && !a.rateLimiter.Allow(getClientIP(r)) {
+		writeJSONError(w, http.StatusTooManyRequests, "Too many login attempts. Please wait a minute and try again.")
+		return
+	}
+
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -563,6 +717,12 @@ func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 		log.Printf("\n[Ottie 2FA Delivery] User: %s\n   Method: %s -> %s\n   One-Time Passcode: %s (Expires in 5 mins)\n",
 			dbUser.Username, dbUser.OTPMethod, dbUser.Email, otpCode)
 
+		dest := dbUser.Email
+		if dbUser.OTPMethod == "sms" {
+			dest = dbUser.Phone
+		}
+		send2FACode(dbUser.OTPMethod, dest, otpCode)
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success":     true,
 			"requires2FA": true,
@@ -605,6 +765,11 @@ func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleApiAuthVerify2FA(w http.ResponseWriter, r *http.Request) {
+	if a.rateLimiter != nil && !a.rateLimiter.Allow(getClientIP(r)) {
+		writeJSONError(w, http.StatusTooManyRequests, "Too many passcode attempts. Please wait a minute and try again.")
+		return
+	}
+
 	var req struct {
 		Code string `json:"code"`
 	}
@@ -677,6 +842,11 @@ func (a *App) handleApiAuthVerify2FA(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleApiAuthVerifyOTP(w http.ResponseWriter, r *http.Request) {
+	if a.rateLimiter != nil && !a.rateLimiter.Allow(getClientIP(r)) {
+		writeJSONError(w, http.StatusTooManyRequests, "Too many attempts. Please wait a minute and try again.")
+		return
+	}
+
 	var req struct {
 		Code string `json:"code"`
 	}
@@ -718,6 +888,12 @@ func (a *App) handleApiAuthVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	username, _ := sess.Values["pending_username"].(string)
 	role, _ := sess.Values["pending_role"].(string)
 
+	token, _ := sess.Values["csrf"].(string)
+	if token == "" {
+		token = newCSRFToken()
+		sess.Values["csrf"] = token
+	}
+
 	delete(sess.Values, "pending_otp_user_id")
 	delete(sess.Values, "pending_username")
 	delete(sess.Values, "pending_role")
@@ -731,9 +907,11 @@ func (a *App) handleApiAuthVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	sess.Save(r, w)
 
 	updateLastLogin(a.db, pendingID)
+	w.Header().Set("X-CSRF-Token", token)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success": true,
+		"success":   true,
+		"csrfToken": token,
 		"user": map[string]any{
 			"id":       strconv.FormatInt(pendingID, 10),
 			"username": username,
@@ -743,8 +921,14 @@ func (a *App) handleApiAuthVerifyOTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleApiAuthRecover(w http.ResponseWriter, r *http.Request) {
+	if a.rateLimiter != nil && !a.rateLimiter.Allow(getClientIP(r)) {
+		writeJSONError(w, http.StatusTooManyRequests, "Too many recovery attempts. Please wait a minute and try again.")
+		return
+	}
+
 	var req struct {
 		Username    string `json:"username"`
+		Password    string `json:"password"`
 		RecoveryKey string `json:"recoveryKey"`
 		NewPassword string `json:"newPassword"`
 	}
