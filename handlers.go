@@ -95,25 +95,53 @@ type SessionUser struct {
 	DEK      []byte
 }
 
+func formatSessionValues(sess *sessions.Session) string {
+	if sess == nil || len(sess.Values) == 0 {
+		return "{empty}"
+	}
+	var b strings.Builder
+	b.WriteString("{")
+	i := 0
+	for k, v := range sess.Values {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		switch val := v.(type) {
+		case string:
+			if len(val) > 20 {
+				b.WriteString(fmt.Sprintf("%v:%q(len=%d)", k, val[:10]+"...", len(val)))
+			} else {
+				b.WriteString(fmt.Sprintf("%v:%q", k, val))
+			}
+		case []byte:
+			b.WriteString(fmt.Sprintf("%v:[]byte(len=%d)", k, len(val)))
+		default:
+			b.WriteString(fmt.Sprintf("%v:%v", k, val))
+		}
+		i++
+	}
+	b.WriteString("}")
+	return b.String()
+}
+
 func (a *App) getSession(r *http.Request) (*sessions.Session, error) {
 	sess, err := a.store.Get(r, sessionName)
+	isHTTPS := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 	if sess != nil && sess.Options != nil {
-		// If request is over HTTPS (TLS or X-Forwarded-Proto: https), ensure Secure is true.
-		// Otherwise, respect the configured environment variable setting on a.store.Options.Secure.
-		isHTTPS := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-		if isHTTPS {
-			sess.Options.Secure = true
-		} else {
-			sess.Options.Secure = a.store.Options.Secure
-		}
+		// RFC 6265bis: Browsers REJECT and DISCARD any cookie with Secure=true over plain HTTP.
+		// Therefore, Secure is dynamically set to true ONLY when request is actually HTTPS or behind an HTTPS proxy.
+		sess.Options.Secure = isHTTPS
 	}
+	log.Printf("[GET SESSION] %s %s from IP=%s (Host=%q, TLS=%v, Proto=%q -> isHTTPS=%v, CookieHeader=%q, err=%v, Values=%s, Secure=%v)",
+		r.Method, r.URL.Path, getClientIP(r), r.Host, r.TLS != nil, r.Header.Get("X-Forwarded-Proto"), isHTTPS, r.Header.Get("Cookie"), err, formatSessionValues(sess),
+		sess.Options.Secure)
 	return sess, err
 }
 
 func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 	sess, err := a.getSession(r)
 	if err != nil || sess == nil {
-		log.Printf("[AUTH] getSession error=%v (Cookie header: %q)", err, r.Header.Get("Cookie"))
+		log.Printf("[AUTH] getSession failed: err=%v (Cookie header: %q)", err, r.Header.Get("Cookie"))
 		return nil, errors.New("no session")
 	}
 
@@ -132,6 +160,7 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 	}
 
 	if uid == 0 {
+		log.Printf("[AUTH] No user_id in session. SessionValues=%s, CookieHeader=%q", formatSessionValues(sess), r.Header.Get("Cookie"))
 		return nil, errors.New("not logged in")
 	}
 
@@ -142,6 +171,7 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 	// Try in-memory store first
 	if sid != "" {
 		if dek, ok := a.dekStore.Get(sid); ok && len(dek) == 32 {
+			log.Printf("[AUTH SUCCESS] Authenticated via memory store: User=%s(ID=%d, role=%s, sid=%s)", username, uid, role, sid)
 			return &SessionUser{
 				ID:       uid,
 				Username: username,
@@ -158,6 +188,7 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 			if sid != "" {
 				a.dekStore.Set(sid, dek)
 			}
+			log.Printf("[AUTH SUCCESS] Authenticated via decrypted cookie DEK: User=%s(ID=%d, role=%s)", username, uid, role)
 			return &SessionUser{
 				ID:       uid,
 				Username: username,
@@ -165,9 +196,9 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 				DEK:      dek,
 			}, nil
 		}
-		log.Printf("[AUTH] DecryptAESGCM on enc_dek failed for user=%s: %v", username, err)
+		log.Printf("[AUTH FAILED] DecryptAESGCM on enc_dek failed for user=%s: %v", username, err)
 	} else {
-		log.Printf("[AUTH] No DEK found for user=%s (sid=%s, enc_dek present=%v)", username, sid, sess.Values["enc_dek"] != nil)
+		log.Printf("[AUTH FAILED] No DEK found for user=%s (sid=%s, enc_dek present=%v)", username, sid, sess.Values["enc_dek"] != nil)
 	}
 
 	return nil, errors.New("session key expired")
@@ -860,8 +891,8 @@ func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if err := sess.Save(r, w); err != nil {
 		log.Printf("[LOGIN ERROR] Failed to save session cookie: %v", err)
 	} else {
-		log.Printf("[LOGIN SUCCESS] User %q logged in successfully from IP %s (Host=%q, Secure=%v, SameSite=%v)",
-			dbUser.Username, getClientIP(r), r.Host, sess.Options.Secure, sess.Options.SameSite)
+		log.Printf("[LOGIN SUCCESS] User %q logged in from IP=%s (Host=%q, Secure=%v, SameSite=%v, Set-Cookie=%q)",
+			dbUser.Username, getClientIP(r), r.Host, sess.Options.Secure, sess.Options.SameSite, w.Header().Get("Set-Cookie"))
 	}
 
 	updateLastLogin(a.db, dbUser.ID)
