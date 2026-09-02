@@ -17,7 +17,7 @@ import (
 )
 
 // Version of Ottie (can be set at build time via -ldflags "-X main.Version=...")
-var Version = "1.0.2.2"
+var Version = "1.0.2.3"
 
 //go:embed static/* frontend/dist/*
 var embeddedFS embed.FS

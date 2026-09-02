@@ -98,10 +98,13 @@ type SessionUser struct {
 func (a *App) getSession(r *http.Request) (*sessions.Session, error) {
 	sess, err := a.store.Get(r, sessionName)
 	if sess != nil && sess.Options != nil {
-		// Over unencrypted plain HTTP connections (e.g. LAN IPs like 192.168.x.x),
-		// ensure Secure flag is disabled so browsers store and transmit cookies properly.
-		if r.TLS == nil && !strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-			sess.Options.Secure = false
+		// If request is over HTTPS (TLS or X-Forwarded-Proto: https), ensure Secure is true.
+		// Otherwise, respect the configured environment variable setting on a.store.Options.Secure.
+		isHTTPS := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+		if isHTTPS {
+			sess.Options.Secure = true
+		} else {
+			sess.Options.Secure = a.store.Options.Secure
 		}
 	}
 	return sess, err
@@ -243,7 +246,7 @@ func (a *App) handleExportVault(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	sess, _ := a.store.Get(r, sessionName)
+	sess, _ := a.getSession(r)
 	if !a.checkCSRF(r, sess) {
 		http.Error(w, "invalid or expired token", http.StatusForbidden)
 		return
@@ -708,7 +711,7 @@ func (a *App) handleApiSetup(w http.ResponseWriter, r *http.Request) {
 		_ = updateUserRecoveryData(a.db, uid, recEncDEK, recSalt, "")
 	}
 
-	sess, _ := a.store.Get(r, sessionName)
+	sess, _ := a.getSession(r)
 	sess.Values["setup_user_id"] = uid
 	sess.Values["setup_dek"] = dek
 	sess.Values["new_recovery_phrase"] = phrase
@@ -723,7 +726,7 @@ func (a *App) handleApiSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleApiSetupConfirm(w http.ResponseWriter, r *http.Request) {
-	sess, _ := a.store.Get(r, sessionName)
+	sess, _ := a.getSession(r)
 	uid, _ := sess.Values["setup_user_id"].(int64)
 	dek, _ := sess.Values["setup_dek"].([]byte)
 
@@ -801,7 +804,7 @@ func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, _ := a.store.Get(r, sessionName)
+	sess, _ := a.getSession(r)
 
 	if dbUser.OTPMethod == "email" || dbUser.OTPMethod == "sms" {
 		otpCode, err := generateNumericOTP()
@@ -891,7 +894,7 @@ func (a *App) handleApiAuthVerify2FA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, _ := a.store.Get(r, sessionName)
+	sess, _ := a.getSession(r)
 	pendingID, _ := sess.Values["pending_otp_user_id"].(int64)
 	if pendingID == 0 {
 		writeJSONError(w, http.StatusUnauthorized, "No pending login session")
@@ -968,7 +971,7 @@ func (a *App) handleApiAuthVerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, _ := a.store.Get(r, sessionName)
+	sess, _ := a.getSession(r)
 	pendingID, _ := sess.Values["pending_otp_user_id"].(int64)
 	if pendingID == 0 {
 		writeJSONError(w, http.StatusUnauthorized, "No pending login session")
@@ -1103,7 +1106,7 @@ func (a *App) handleApiAuthRecover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleApiAuthLogout(w http.ResponseWriter, r *http.Request) {
-	sess, _ := a.store.Get(r, sessionName)
+	sess, _ := a.getSession(r)
 	if sid, ok := sess.Values["session_token"].(string); ok {
 		a.dekStore.Delete(sid)
 	}
@@ -1401,7 +1404,7 @@ func (a *App) handleApiSettingsRecoveryRegenerate(w http.ResponseWriter, r *http
 		return
 	}
 
-	sess, _ := a.store.Get(r, sessionName)
+	sess, _ := a.getSession(r)
 	sess.Values["new_recovery_phrase"] = phrase
 	sess.Save(r, w)
 
