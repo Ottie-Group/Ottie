@@ -22,9 +22,14 @@ COPY . .
 COPY --from=frontend-builder /src/frontend/dist ./frontend/dist
 
 ARG TARGETOS TARGETARCH
-ARG VERSION=1.0.0
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
-    go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o /out/ottie .
+ARG VERSION=""
+RUN if [ -n "$VERSION" ]; then \
+        LDFLAGS="-s -w -X main.Version=${VERSION}"; \
+    else \
+        LDFLAGS="-s -w"; \
+    fi && \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="${LDFLAGS}" -o /out/ottie .
 
 RUN adduser -D -u 10001 -g "" appuser && \
     mkdir -p /out/data && \
