@@ -10,11 +10,11 @@ Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written
 
 <p align="center">
   <a href="https://github.com/Ottie-Group/Ottie/actions">
-    <img src="https://img.shields.io/github/actions/workflow/status/Jellyfin-PG/JellyEmu/release.yml" />
+    <img src="https://img.shields.io/github/actions/workflow/status/Ottie-Group/Ottie/release.yml" />
   </a>
 
   <a href="https://github.com/Ottie-Group/Ottie/releases">
-    <img src="https://img.shields.io/github/downloads/Jellyfin-PG/JellyEmu/total?label=downloads" />
+    <img src="https://img.shields.io/github/downloads/Ottie-Group/Ottie/total?label=downloads" />
   </a>
 </p>
 
