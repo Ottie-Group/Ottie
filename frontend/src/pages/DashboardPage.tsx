@@ -40,9 +40,10 @@ export function DashboardPage() {
     return () => stopTicker();
   }, [fetchAccounts, startTicker, stopTicker]);
 
-  // Extract unique categories
-  const categories = Array.from(new Set(accounts.map((a) => a.category).filter(Boolean)));
-  if (!categories.includes('Personal')) categories.unshift('Personal');
+  // Extract unique non-empty categories present across user accounts
+  const categories = Array.from(
+    new Set(accounts.map((a) => (a.category || '').trim()).filter((c) => Boolean(c) && c.toLowerCase() !== 'all'))
+  );
 
   // Filter accounts by search query & category
   const filteredAccounts = accounts.filter((account) => {
@@ -54,7 +55,7 @@ export function DashboardPage() {
       (account.category || '').toLowerCase().includes(query);
 
     const isAll = !selectedCategory || selectedCategory.toLowerCase() === 'all';
-    const accCategory = (account.category || 'Personal').toLowerCase();
+    const accCategory = (account.category || '').trim().toLowerCase();
     const matchesCategory = isAll || accCategory === selectedCategory.toLowerCase();
 
     return matchesSearch && matchesCategory;

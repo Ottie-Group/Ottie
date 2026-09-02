@@ -647,15 +647,11 @@ func (a *App) handleApiAccounts(w http.ResponseWriter, r *http.Request) {
 
 	dtos := make([]AccountDTO, 0, len(accounts))
 	for _, acc := range accounts {
-		cat := acc.Category
-		if cat == "" {
-			cat = "Personal"
-		}
 		dtos = append(dtos, AccountDTO{
 			ID:          strconv.FormatInt(acc.ID, 10),
 			Issuer:      acc.Issuer,
 			AccountName: acc.AccountName,
-			Category:    cat,
+			Category:    acc.Category,
 			CreatedAt:   acc.CreatedAt.Format(time.RFC3339),
 		})
 	}
@@ -1287,10 +1283,12 @@ func (a *App) handleApiTokensDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := deleteAccount(a.db, idInt, user.ID); err != nil {
+	if err := deleteAccount(a.db, user.ID, idInt); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "Failed to delete token.")
 		return
 	}
+
+	debugLog("[TOKEN DELETE] User %s deleted token %d", user.Username, idInt)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,

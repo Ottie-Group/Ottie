@@ -334,4 +334,13 @@ func TestFullWorkflow(t *testing.T) {
 	if recDelTok.Code != http.StatusOK {
 		t.Fatalf("expected 200 on delete token, got %d, body: %s", recDelTok.Code, recDelTok.Body.String())
 	}
+
+	charlieUser, _ := getUserByUsername(app.db, "charlie")
+	remainingAccounts, err := listAccounts(app.db, charlieUser.ID)
+	if err != nil {
+		t.Fatalf("failed to list accounts after delete: %v", err)
+	}
+	if len(remainingAccounts) != 0 {
+		t.Fatalf("expected 0 accounts after deletion, found %d", len(remainingAccounts))
+	}
 }
