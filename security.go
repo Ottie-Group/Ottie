@@ -126,12 +126,35 @@ func getClientIP(r *http.Request) string {
 	return host
 }
 
-// isSameOrigin checks if Origin or Referer header matches the request host
+func isLocalOrPrivateIP(hostname string) bool {
+	if strings.EqualFold(hostname, "localhost") || strings.EqualFold(hostname, "127.0.0.1") || hostname == "0.0.0.0" || hostname == "::" || strings.HasSuffix(strings.ToLower(hostname), ".local") {
+		return true
+	}
+	ip := net.ParseIP(hostname)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
+}
+
+// isSameOrigin checks if Origin or Referer header matches the request host or is from the same site
 func isSameOrigin(r *http.Request) bool {
 	// Check Sec-Fetch-Site (present in all modern browsers)
 	fetchSite := r.Header.Get("Sec-Fetch-Site")
 	if fetchSite == "cross-site" {
 		return false
+	}
+	if fetchSite == "same-origin" || fetchSite == "same-site" || fetchSite == "none" {
+		return true
+	}
+
+	reqHost := r.Header.Get("X-Forwarded-Host")
+	if reqHost == "" {
+		reqHost = r.Host
+	}
+	reqHostname, _, err := net.SplitHostPort(reqHost)
+	if err != nil {
+		reqHostname = reqHost
 	}
 
 	origin := r.Header.Get("Origin")
@@ -140,8 +163,10 @@ func isSameOrigin(r *http.Request) bool {
 		if err != nil {
 			return false
 		}
-		// Match hostname (ignoring port or protocol differences between dev proxies)
-		if strings.EqualFold(u.Host, r.Host) || strings.EqualFold(u.Hostname(), "localhost") || strings.EqualFold(u.Hostname(), "127.0.0.1") {
+		if strings.EqualFold(u.Host, reqHost) || strings.EqualFold(u.Hostname(), reqHostname) {
+			return true
+		}
+		if isLocalOrPrivateIP(u.Hostname()) && isLocalOrPrivateIP(reqHostname) {
 			return true
 		}
 		return false
@@ -153,12 +178,15 @@ func isSameOrigin(r *http.Request) bool {
 		if err != nil {
 			return false
 		}
-		if strings.EqualFold(u.Host, r.Host) || strings.EqualFold(u.Hostname(), "localhost") || strings.EqualFold(u.Hostname(), "127.0.0.1") {
+		if strings.EqualFold(u.Host, reqHost) || strings.EqualFold(u.Hostname(), reqHostname) {
+			return true
+		}
+		if isLocalOrPrivateIP(u.Hostname()) && isLocalOrPrivateIP(reqHostname) {
 			return true
 		}
 		return false
 	}
 
-	// If neither Origin nor Referer is present (e.g. server-to-server or direct curl), allow if Sec-Fetch-Site is not cross-site
+	// If neither Origin nor Referer is present, allow if not explicitly marked cross-site
 	return fetchSite != "cross-site"
 }

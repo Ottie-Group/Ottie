@@ -294,6 +294,12 @@ export function AddTokenPage() {
     async function initCamera() {
       setCameraError(null);
       try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          setCameraError('Live camera video streaming requires HTTPS or localhost. Over plain HTTP on a local network, please use "Take / Pick Photo" or upload an image below.');
+          setIsCameraActive(false);
+          return;
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
         });
@@ -381,6 +387,10 @@ export function AddTokenPage() {
 
   const startCamera = () => {
     setCameraError(null);
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError('Live camera video streaming requires HTTPS or localhost. Over plain HTTP on a local network, please use "Take / Pick Photo" or upload an image below.');
+      return;
+    }
     setIsCameraActive(true);
   };
 

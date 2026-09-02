@@ -16,6 +16,9 @@ import (
 	"github.com/gorilla/sessions"
 )
 
+// Version of Ottie (can be set at build time via -ldflags "-X main.Version=...")
+var Version = "1.0.0"
+
 //go:embed static/* frontend/dist/*
 var embeddedFS embed.FS
 
@@ -28,17 +31,22 @@ func init() {
 	mime.AddExtensionType(".html", "text/html; charset=utf-8")
 }
 
-func securityHeaders(next http.Handler) http.Handler {
+func securityHeaders(next http.Handler, secureCookie bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';")
-		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
 		h.Set("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
-		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+
+		// Only emit HSTS and COOP when on a secure origin (HTTPS / TLS or behind an HTTPS reverse proxy)
+		isHTTPS := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") || secureCookie
+		if isHTTPS {
+			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+			h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		}
 
 		// Protect mutating API endpoints against CSRF and cross-origin attacks
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -303,6 +311,6 @@ func main() {
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
-	log.Printf("🦦 Ottie is swimming at http://%s", addr)
-	log.Fatal(http.ListenAndServe(addr, securityHeaders(mux)))
+	log.Printf("🦦 Ottie v%s is swimming at http://%s", Version, addr)
+	log.Fatal(http.ListenAndServe(addr, securityHeaders(mux, secureCookie)))
 }
