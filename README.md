@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icon.svg" width="25%" alt="Icon" />
+  <img src="assets/icon.svg" width="15%" alt="Icon" />
 </p>
 
 # 🦦 Ottie - Cute & Secure Self-Hosted TOTP Manager
