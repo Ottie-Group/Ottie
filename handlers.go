@@ -278,7 +278,7 @@ func (a *App) handleExportVault(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload := ExportPayload{
-		OttieVersion: "1.0.0",
+		OttieVersion: Version,
 		ExportDate:   time.Now().UTC(),
 		Username:     user.Username,
 		Accounts:     items,
