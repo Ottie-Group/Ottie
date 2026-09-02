@@ -23,13 +23,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: 'stable'
           check-latest: true
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
         with:
-          go-version-input: '1.22'
+          go-version-input: 'stable'
           go-package: ./...
 
   gosec:
@@ -42,7 +42,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: 'stable'
 
       - name: Run gosec
         uses: securego/gosec@master
