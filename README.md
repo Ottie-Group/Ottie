@@ -6,6 +6,20 @@
 
 Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written in Go with SQLite. It stashes your TOTP secrets securely encrypted in its den and surfaces live 6-digit codes over a playful, intuitive, and cute green-themed web UI.
 
+---
+
+<p align="center">
+  <a href="https://github.com/Ottie-Group/Ottie/actions">
+    <img src="https://img.shields.io/github/actions/workflow/status/Jellyfin-PG/JellyEmu/release.yml" />
+  </a>
+
+  <a href="https://github.com/Ottie-Group/Ottie/releases">
+    <img src="https://img.shields.io/github/downloads/Jellyfin-PG/JellyEmu/total?label=downloads" />
+  </a>
+</p>
+
+---
+
 ## Screenshots
 
 <p align="center">
