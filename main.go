@@ -17,10 +17,32 @@ import (
 )
 
 // Version of Ottie (can be set at build time via -ldflags "-X main.Version=...")
-var Version = "1.0.2.5"
+var Version = "1.0.3"
 
 //go:embed static/* frontend/dist/*
 var embeddedFS embed.FS
+
+var isDebugLogging = false
+
+func initDebugLog() {
+	val := os.Getenv("OTTIE_DEBUG_LOGS")
+	if val == "" {
+		val = os.Getenv("OTTIE_DEBUG")
+	}
+	if val == "" {
+		val = os.Getenv("DEBUG")
+	}
+	isDebugLogging = val == "1" || strings.EqualFold(val, "true") || strings.EqualFold(val, "yes")
+	if isDebugLogging {
+		log.Println("[DEBUG] Verbose diagnostics logging enabled via OTTIE_DEBUG_LOGS=1")
+	}
+}
+
+func debugLog(format string, v ...any) {
+	if isDebugLogging {
+		log.Printf(format, v...)
+	}
+}
 
 func init() {
 	// Fix Windows registry MIME type bugs (where .css is often mapped to text/plain)
@@ -67,6 +89,8 @@ func securityHeaders(next http.Handler, secureCookie bool) http.Handler {
 }
 
 func main() {
+	Version = strings.TrimPrefix(strings.TrimSpace(Version), "v")
+	initDebugLog()
 	dbPath := os.Getenv("OTTIE_DB_PATH")
 	if dbPath == "" {
 		if err := os.MkdirAll("data", 0700); err != nil {

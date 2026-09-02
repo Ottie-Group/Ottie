@@ -132,7 +132,7 @@ func (a *App) getSession(r *http.Request) (*sessions.Session, error) {
 		// Therefore, Secure is dynamically set to true ONLY when request is actually HTTPS or behind an HTTPS proxy.
 		sess.Options.Secure = isHTTPS
 	}
-	log.Printf("[GET SESSION] %s %s from IP=%s (Host=%q, TLS=%v, Proto=%q -> isHTTPS=%v, CookieHeader=%q, err=%v, Values=%s, Secure=%v)",
+	debugLog("[GET SESSION] %s %s from IP=%s (Host=%q, TLS=%v, Proto=%q -> isHTTPS=%v, CookieHeader=%q, err=%v, Values=%s, Secure=%v)",
 		r.Method, r.URL.Path, getClientIP(r), r.Host, r.TLS != nil, r.Header.Get("X-Forwarded-Proto"), isHTTPS, r.Header.Get("Cookie"), err, formatSessionValues(sess),
 		sess.Options.Secure)
 	return sess, err
@@ -141,7 +141,7 @@ func (a *App) getSession(r *http.Request) (*sessions.Session, error) {
 func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 	sess, err := a.getSession(r)
 	if err != nil || sess == nil {
-		log.Printf("[AUTH] getSession failed: err=%v (Cookie header: %q)", err, r.Header.Get("Cookie"))
+		debugLog("[AUTH] getSession failed: err=%v (Cookie header: %q)", err, r.Header.Get("Cookie"))
 		return nil, errors.New("no session")
 	}
 
@@ -160,7 +160,7 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 	}
 
 	if uid == 0 {
-		log.Printf("[AUTH] No user_id in session. SessionValues=%s, CookieHeader=%q", formatSessionValues(sess), r.Header.Get("Cookie"))
+		debugLog("[AUTH] No user_id in session. SessionValues=%s, CookieHeader=%q", formatSessionValues(sess), r.Header.Get("Cookie"))
 		return nil, errors.New("not logged in")
 	}
 
@@ -171,7 +171,7 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 	// Try in-memory store first
 	if sid != "" {
 		if dek, ok := a.dekStore.Get(sid); ok && len(dek) == 32 {
-			log.Printf("[AUTH SUCCESS] Authenticated via memory store: User=%s(ID=%d, role=%s, sid=%s)", username, uid, role, sid)
+			debugLog("[AUTH SUCCESS] Authenticated via memory store: User=%s(ID=%d, role=%s, sid=%s)", username, uid, role, sid)
 			return &SessionUser{
 				ID:       uid,
 				Username: username,
@@ -188,7 +188,7 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 			if sid != "" {
 				a.dekStore.Set(sid, dek)
 			}
-			log.Printf("[AUTH SUCCESS] Authenticated via decrypted cookie DEK: User=%s(ID=%d, role=%s)", username, uid, role)
+			debugLog("[AUTH SUCCESS] Authenticated via decrypted cookie DEK: User=%s(ID=%d, role=%s)", username, uid, role)
 			return &SessionUser{
 				ID:       uid,
 				Username: username,
@@ -196,9 +196,9 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 				DEK:      dek,
 			}, nil
 		}
-		log.Printf("[AUTH FAILED] DecryptAESGCM on enc_dek failed for user=%s: %v", username, err)
+		debugLog("[AUTH FAILED] DecryptAESGCM on enc_dek failed for user=%s: %v", username, err)
 	} else {
-		log.Printf("[AUTH FAILED] No DEK found for user=%s (sid=%s, enc_dek present=%v)", username, sid, sess.Values["enc_dek"] != nil)
+		debugLog("[AUTH FAILED] No DEK found for user=%s (sid=%s, enc_dek present=%v)", username, sid, sess.Values["enc_dek"] != nil)
 	}
 
 	return nil, errors.New("session key expired")
@@ -576,7 +576,7 @@ func (a *App) handleApiMe(w http.ResponseWriter, r *http.Request) {
 
 	user, err := a.getSessionUser(r)
 	if err != nil {
-		log.Printf("[SESSION ME] Unauthenticated request from IP=%s (Host=%q, CookiePresent=%v): %v",
+		debugLog("[SESSION ME] Unauthenticated request from IP=%s (Host=%q, CookiePresent=%v): %v",
 			getClientIP(r), r.Host, r.Header.Get("Cookie") != "", err)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"setupNeeded":   false,
@@ -586,7 +586,7 @@ func (a *App) handleApiMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[SESSION ME] Authenticated user %q from IP=%s", user.Username, getClientIP(r))
+	debugLog("[SESSION ME] Authenticated user %q from IP=%s", user.Username, getClientIP(r))
 
 	dbUser, _ := getUserByID(a.db, user.ID)
 	has2FA := false
@@ -891,7 +891,7 @@ func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if err := sess.Save(r, w); err != nil {
 		log.Printf("[LOGIN ERROR] Failed to save session cookie: %v", err)
 	} else {
-		log.Printf("[LOGIN SUCCESS] User %q logged in from IP=%s (Host=%q, Secure=%v, SameSite=%v, Set-Cookie=%q)",
+		debugLog("[LOGIN SUCCESS] User %q logged in from IP=%s (Host=%q, Secure=%v, SameSite=%v, Set-Cookie=%q)",
 			dbUser.Username, getClientIP(r), r.Host, sess.Options.Secure, sess.Options.SameSite, w.Header().Get("Set-Cookie"))
 	}
 
