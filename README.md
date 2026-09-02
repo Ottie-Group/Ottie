@@ -2,7 +2,16 @@
 
 Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written in Go with SQLite. It stashes your TOTP secrets securely encrypted in its den and surfaces live 6-digit codes over a playful, intuitive, and cute green-themed web UI.
 
+## Screenshots
 
+<p align="center">
+  <a href="assets/preview.png">
+    <img src="assets/preview.png" width="45%" alt="Dashboard" />
+  </a>
+</p>
+<p align="center">
+  <em>Click on an image to view it full size.</em>
+</p>
 
 ---
 
