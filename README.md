@@ -134,4 +134,4 @@ go build -trimpath -ldflags="-s -w" -o ottie .
 
 ---
 
-Designed with ðŸ’š for security and simplicity.
+Designed with 💚 for security and simplicity.
