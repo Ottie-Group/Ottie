@@ -17,7 +17,7 @@ import (
 )
 
 // Version of Ottie (can be set at build time via -ldflags "-X main.Version=...")
-var Version = "1.0.2.1"
+var Version = "1.0.2.2"
 
 //go:embed static/* frontend/dist/*
 var embeddedFS embed.FS
@@ -50,6 +50,8 @@ func securityHeaders(next http.Handler, secureCookie bool) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete || r.Method == http.MethodPatch {
 				if !isSameOrigin(r) {
+					log.Printf("[SECURITY BLOCKED] 403 Forbidden on %s %s from IP=%s (Host=%q, Origin=%q, Referer=%q, Sec-Fetch-Site=%q)",
+						r.Method, r.URL.Path, getClientIP(r), r.Host, r.Header.Get("Origin"), r.Header.Get("Referer"), r.Header.Get("Sec-Fetch-Site"))
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusForbidden)
 					w.Write([]byte(`{"error":"Cross-origin request blocked for security"}`))
