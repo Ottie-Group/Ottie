@@ -1,8 +1,8 @@
-# 🦦 Ottie — Cute & Secure Self-Hosted TOTP Manager
+# 🦦 Ottie - Cute & Secure Self-Hosted TOTP Manager
 
 Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written in Go with SQLite. It stashes your TOTP secrets securely encrypted in its den and surfaces live 6-digit codes over a playful, intuitive, and cute green-themed web UI.
 
-The name **Ottie** is inspired by the **OT** in **OTP** — and because otters are famously good at holding onto small, precious things!
+
 
 ---
 
