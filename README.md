@@ -17,7 +17,6 @@ Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written
 
 ## ✨ Features
 
-- **🦦 Cute & Intuitive Green Aesthetic**: Sage, mint, and deep forest emerald palette with an animated otter mascot, circular countdown timers, and smooth micro-interactions.
 - **🔒 True Zero-Knowledge Per-User Encryption**:
   - Each account derives a Key Encryption Key (KEK) from its own master password using **Argon2id** (`64MB`, `3 iterations`).
   - Secrets are encrypted at rest with a random 32-byte Data Encryption Key (DEK) using **AES-256-GCM**.
