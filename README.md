@@ -16,6 +16,18 @@ Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written
   <a href="https://github.com/Ottie-Group/Ottie/releases">
     <img src="https://img.shields.io/github/downloads/Ottie-Group/Ottie/total?label=downloads" />
   </a>
+
+  <a href="https://github.com/Ottie-Group/Ottie/actions/workflows/codeql.yml">
+    <img src="https://github.com/Ottie-Group/Ottie/actions/workflows/codeql.yml/badge.svg" />
+  </a>
+  
+  <a href="https://github.com/Ottie-Group/Ottie/actions/workflows/security-audit.yml">
+    <img src="https://github.com/Ottie-Group/Ottie/actions/workflows/security-audit.yml/badge.svg" />
+  </a>
+  
+  <a href="https://goreportcard.com/report/github.com/Ottie-Group/Ottie">
+    <img src="https://goreportcard.com/badge/github.com/Ottie-Group/Ottie" />
+  </a>
 </p>
 
 ---
