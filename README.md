@@ -19,7 +19,7 @@ Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written
 
 ---
 
-## âœ¨ Features
+## Features
 
 - **True Zero-Knowledge Per-User Encryption**:
   - Each account derives a Key Encryption Key (KEK) from its own master password using **Argon2id** (`64MB`, `3 iterations`).
@@ -45,7 +45,7 @@ Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written
 
 ---
 
-## ðŸš€ Quick Start (Local)
+## Quick Start (Local)
 
 ```bash
 # 1. Clone & Run
@@ -61,7 +61,7 @@ Visit **`http://localhost:8080`** in your browser:
 
 ---
 
-## ðŸ³ Quick Start (Docker)
+## Quick Start (Docker)
 
 ```bash
 cp .env.example .env
@@ -72,7 +72,7 @@ Access the UI at `http://localhost:8080`. The SQLite database is safely persiste
 
 ---
 
-## ðŸ” Security & Zero-Knowledge Architecture
+## Security & Zero-Knowledge Architecture
 
 ```
 User Password â”€â”€(Argon2id)â”€â”€â–º User KEK (Key Encryption Key)
@@ -96,7 +96,7 @@ User Password â”€â”€(Argon2id)â”€â”€â–º User KEK (Key En
 
 ---
 
-## ðŸ› ï¸ Testing & Verification
+## Testing & Verification
 
 Run the full automated test suite:
 
