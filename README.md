@@ -2,7 +2,7 @@
   <img src="assets/icon.svg" width="15%" alt="Icon" />
 </p>
 
-# 🦦 Ottie - Cute & Secure Self-Hosted TOTP Manager
+# ðŸ¦¦ Ottie - Cute & Secure Self-Hosted TOTP Manager
 
 Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written in Go with SQLite. It stashes your TOTP secrets securely encrypted in its den and surfaces live 6-digit codes over a playful, intuitive, and cute green-themed web UI.
 
@@ -19,33 +19,33 @@ Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written
 
 ---
 
-## ✨ Features
+## âœ¨ Features
 
-- **🔒 True Zero-Knowledge Per-User Encryption**:
+- **ðŸ”’ True Zero-Knowledge Per-User Encryption**:
   - Each account derives a Key Encryption Key (KEK) from its own master password using **Argon2id** (`64MB`, `3 iterations`).
   - Secrets are encrypted at rest with a random 32-byte Data Encryption Key (DEK) using **AES-256-GCM**.
   - **Admins cannot view or decrypt users' TOTP secrets**. Each user is entirely responsible for their own data.
-- **🚀 Seamless On-Ramp Setup Wizard (`/setup`)**:
+- **ðŸš€ Seamless On-Ramp Setup Wizard (`/setup`)**:
   - Fresh installations automatically redirect to a friendly 3-step setup wizard to create the root administrator account.
-- **🛡️ Multi-User Admin Management (`/admin`)**:
+- **ðŸ›¡ï¸ Multi-User Admin Management (`/admin`)**:
   - Administrators can create user accounts (setting initial roles and passwords).
   - Administrators can delete user accounts, triggering an automatic cascading purge of all associated encrypted records.
   - Zero-knowledge data isolation ensures admins only see token counts, never plaintext secrets or issuers.
-- **⚡ 1-Click Fast Copy & Live Search**:
+- **âš¡ 1-Click Fast Copy & Live Search**:
   - Click any code or copy button to instantly copy to clipboard with a mascot toast notification.
   - Filter your vault in real-time by typing issuer or account names.
-- **📷 QR Code Scanner & Manual Import**:
+- **ðŸ“· QR Code Scanner & Manual Import**:
   - Drag and drop QR code screenshots or paste `otpauth://` URIs / base32 raw secrets.
   - Live confirmation code verification catches typos before saving.
-- **📦 Single Static Binary**:
+- **ðŸ“¦ Single Static Binary**:
   - HTML templates and static assets are embedded with `//go:embed`.
   - Built with `modernc.org/sqlite` (pure Go SQLite, zero CGO required).
-- **💾 Vault Backup Export**:
+- **ðŸ’¾ Vault Backup Export**:
   - Users can export a decrypted JSON backup of their tokens and `otpauth://` URIs anytime.
 
 ---
 
-## 🚀 Quick Start (Local)
+## ðŸš€ Quick Start (Local)
 
 ```bash
 # 1. Clone & Run
@@ -61,7 +61,7 @@ Visit **`http://localhost:8080`** in your browser:
 
 ---
 
-## 🐳 Quick Start (Docker)
+## ðŸ³ Quick Start (Docker)
 
 ```bash
 cp .env.example .env
@@ -72,20 +72,20 @@ Access the UI at `http://localhost:8080`. The SQLite database is safely persiste
 
 ---
 
-## 🔐 Security & Zero-Knowledge Architecture
+## ðŸ” Security & Zero-Knowledge Architecture
 
 ```
-User Password ──(Argon2id)──► User KEK (Key Encryption Key)
-                                 │
-                 ┌───────────────┴───────────────┐
-                 ▼                               ▼
+User Password â”€â”€(Argon2id)â”€â”€â–º User KEK (Key Encryption Key)
+                                 â”‚
+                 â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                 â–¼                               â–¼
        Wrapped DEK at rest            User Active Session DEK
      (Stored in SQLite users)            (In-memory only)
-                                                 │
-                                                 ▼
+                                                 â”‚
+                                                 â–¼
                                      AES-256-GCM Decryption
-                                                 │
-                                                 ▼
+                                                 â”‚
+                                                 â–¼
                                        Live 6-Digit TOTP Code
 ```
 
@@ -96,7 +96,7 @@ User Password ──(Argon2id)──► User KEK (Key Encryption Key)
 
 ---
 
-## 🛠️ Testing & Verification
+## ðŸ› ï¸ Testing & Verification
 
 Run the full automated test suite:
 
@@ -112,4 +112,4 @@ go build -trimpath -ldflags="-s -w" -o ottie .
 
 ---
 
-Designed with 💚 for security and simplicity.
+Designed with ðŸ’š for security and simplicity.
