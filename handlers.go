@@ -95,9 +95,22 @@ type SessionUser struct {
 	DEK      []byte
 }
 
-func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
+func (a *App) getSession(r *http.Request) (*sessions.Session, error) {
 	sess, err := a.store.Get(r, sessionName)
+	if sess != nil && sess.Options != nil {
+		// Over unencrypted plain HTTP connections (e.g. LAN IPs like 192.168.x.x),
+		// ensure Secure flag is disabled so browsers store and transmit cookies properly.
+		if r.TLS == nil && !strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			sess.Options.Secure = false
+		}
+	}
+	return sess, err
+}
+
+func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
+	sess, err := a.getSession(r)
 	if err != nil || sess == nil {
+		log.Printf("[AUTH] getSession error=%v (Cookie header: %q)", err, r.Header.Get("Cookie"))
 		return nil, errors.New("no session")
 	}
 
@@ -149,6 +162,9 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 				DEK:      dek,
 			}, nil
 		}
+		log.Printf("[AUTH] DecryptAESGCM on enc_dek failed for user=%s: %v", username, err)
+	} else {
+		log.Printf("[AUTH] No DEK found for user=%s (sid=%s, enc_dek present=%v)", username, sid, sess.Values["enc_dek"] != nil)
 	}
 
 	return nil, errors.New("session key expired")
@@ -515,7 +531,7 @@ func (a *App) handleApiMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, _ := a.store.Get(r, sessionName)
+	sess, _ := a.getSession(r)
 	token, _ := sess.Values["csrf"].(string)
 	if token == "" {
 		token = newCSRFToken()
@@ -526,6 +542,8 @@ func (a *App) handleApiMe(w http.ResponseWriter, r *http.Request) {
 
 	user, err := a.getSessionUser(r)
 	if err != nil {
+		log.Printf("[SESSION ME] Unauthenticated request from IP=%s (Host=%q, CookiePresent=%v): %v",
+			getClientIP(r), r.Host, r.Header.Get("Cookie") != "", err)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"setupNeeded":   false,
 			"authenticated": false,
@@ -533,6 +551,8 @@ func (a *App) handleApiMe(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	log.Printf("[SESSION ME] Authenticated user %q from IP=%s", user.Username, getClientIP(r))
 
 	dbUser, _ := getUserByID(a.db, user.ID)
 	has2FA := false
@@ -607,7 +627,7 @@ func (a *App) handleApiAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-	"accounts": dtos,
+		"accounts": dtos,
 	})
 }
 
@@ -818,7 +838,10 @@ func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	sid := newCSRFToken()
 	a.dekStore.Set(sid, dek)
-	encCookieDEK, _ := EncryptAESGCM(dek, a.serverKey)
+	encCookieDEK, err := EncryptAESGCM(dek, a.serverKey)
+	if err != nil {
+		log.Printf("[LOGIN ERROR] EncryptAESGCM on DEK failed: %v", err)
+	}
 
 	token, _ := sess.Values["csrf"].(string)
 	if token == "" {
@@ -831,7 +854,12 @@ func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	sess.Values["role"] = dbUser.Role
 	sess.Values["session_token"] = sid
 	sess.Values["enc_dek"] = encCookieDEK
-	sess.Save(r, w)
+	if err := sess.Save(r, w); err != nil {
+		log.Printf("[LOGIN ERROR] Failed to save session cookie: %v", err)
+	} else {
+		log.Printf("[LOGIN SUCCESS] User %q logged in successfully from IP %s (Host=%q, Secure=%v, SameSite=%v)",
+			dbUser.Username, getClientIP(r), r.Host, sess.Options.Secure, sess.Options.SameSite)
+	}
 
 	updateLastLogin(a.db, dbUser.ID)
 	w.Header().Set("X-CSRF-Token", token)
