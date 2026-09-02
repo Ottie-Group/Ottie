@@ -2,7 +2,7 @@
   <img src="assets/icon.svg" width="15%" alt="Icon" />
 </p>
 
-# ðŸ¦¦ Ottie - Cute & Secure Self-Hosted TOTP Manager
+# Ottie - Cute & Secure Self-Hosted TOTP Manager
 
 Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written in Go with SQLite. It stashes your TOTP secrets securely encrypted in its den and surfaces live 6-digit codes over a playful, intuitive, and cute green-themed web UI.
 
@@ -21,26 +21,26 @@ Ottie is a lightweight, single-binary, self-hosted 2FA authenticator app written
 
 ## âœ¨ Features
 
-- **ðŸ”’ True Zero-Knowledge Per-User Encryption**:
+- **True Zero-Knowledge Per-User Encryption**:
   - Each account derives a Key Encryption Key (KEK) from its own master password using **Argon2id** (`64MB`, `3 iterations`).
   - Secrets are encrypted at rest with a random 32-byte Data Encryption Key (DEK) using **AES-256-GCM**.
   - **Admins cannot view or decrypt users' TOTP secrets**. Each user is entirely responsible for their own data.
-- **ðŸš€ Seamless On-Ramp Setup Wizard (`/setup`)**:
+- **Seamless On-Ramp Setup Wizard (`/setup`)**:
   - Fresh installations automatically redirect to a friendly 3-step setup wizard to create the root administrator account.
-- **ðŸ›¡ï¸ Multi-User Admin Management (`/admin`)**:
+- **Multi-User Admin Management (`/admin`)**:
   - Administrators can create user accounts (setting initial roles and passwords).
   - Administrators can delete user accounts, triggering an automatic cascading purge of all associated encrypted records.
   - Zero-knowledge data isolation ensures admins only see token counts, never plaintext secrets or issuers.
-- **âš¡ 1-Click Fast Copy & Live Search**:
+- **1-Click Fast Copy & Live Search**:
   - Click any code or copy button to instantly copy to clipboard with a mascot toast notification.
   - Filter your vault in real-time by typing issuer or account names.
-- **ðŸ“· QR Code Scanner & Manual Import**:
+- **QR Code Scanner & Manual Import**:
   - Drag and drop QR code screenshots or paste `otpauth://` URIs / base32 raw secrets.
   - Live confirmation code verification catches typos before saving.
-- **ðŸ“¦ Single Static Binary**:
+- **Single Static Binary**:
   - HTML templates and static assets are embedded with `//go:embed`.
   - Built with `modernc.org/sqlite` (pure Go SQLite, zero CGO required).
-- **ðŸ’¾ Vault Backup Export**:
+- **Vault Backup Export**:
   - Users can export a decrypted JSON backup of their tokens and `otpauth://` URIs anytime.
 
 ---
