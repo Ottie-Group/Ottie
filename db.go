@@ -44,6 +44,18 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 	failures     INTEGER NOT NULL DEFAULT 0,
 	locked_until DATETIME
 );
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+	id           TEXT PRIMARY KEY,
+	user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	ip_address   TEXT NOT NULL DEFAULT '',
+	user_agent   TEXT NOT NULL DEFAULT '',
+	device_name  TEXT NOT NULL DEFAULT '',
+	created_at   DATETIME NOT NULL,
+	last_seen_at DATETIME NOT NULL,
+	revoked_at   DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
 `
 
 func openDB(path string) (*sql.DB, error) {
@@ -324,5 +336,113 @@ func recordLoginFailure(db *sql.DB, ip string) error {
 
 func clearLoginFailures(db *sql.DB, ip string) error {
 	_, err := db.Exec(`DELETE FROM login_attempts WHERE ip = ?`, ip)
+	return err
+}
+
+// --- User Session Management ---
+
+type UserSession struct {
+	ID         string     `json:"id"`
+	UserID     int64      `json:"userId"`
+	IPAddress  string     `json:"ipAddress"`
+	UserAgent  string     `json:"userAgent"`
+	DeviceName string     `json:"deviceName"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastSeenAt time.Time  `json:"lastSeenAt"`
+	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
+	IsCurrent  bool       `json:"isCurrent,omitempty"`
+}
+
+func createUserSession(db *sql.DB, id string, userID int64, ip, userAgent, deviceName string) error {
+	now := time.Now()
+	_, err := db.Exec(`
+		INSERT INTO user_sessions (id, user_id, ip_address, user_agent, device_name, created_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			last_seen_at = excluded.last_seen_at,
+			ip_address = excluded.ip_address,
+			user_agent = excluded.user_agent,
+			device_name = excluded.device_name
+	`, id, userID, ip, userAgent, deviceName, now, now)
+	return err
+}
+
+func isSessionValid(db *sql.DB, sessionID string, userID int64, ip, userAgent, deviceName string) (bool, error) {
+	if sessionID == "" || userID == 0 {
+		return false, nil
+	}
+	var revokedAt sql.NullTime
+	err := db.QueryRow(`
+		SELECT revoked_at FROM user_sessions
+		WHERE id = ? AND user_id = ?
+	`, sessionID, userID).Scan(&revokedAt)
+
+	if err == sql.ErrNoRows {
+		// Auto-register legacy/mock session
+		_ = createUserSession(db, sessionID, userID, ip, userAgent, deviceName)
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !revokedAt.Valid, nil
+}
+
+func touchUserSession(db *sql.DB, sessionID string, ip string) error {
+	_, err := db.Exec(`
+		UPDATE user_sessions
+		SET last_seen_at = ?, ip_address = ?
+		WHERE id = ? AND revoked_at IS NULL
+	`, time.Now(), ip, sessionID)
+	return err
+}
+
+func getUserActiveSessions(db *sql.DB, userID int64) ([]UserSession, error) {
+	rows, err := db.Query(`
+		SELECT id, user_id, ip_address, user_agent, device_name, created_at, last_seen_at
+		FROM user_sessions
+		WHERE user_id = ? AND revoked_at IS NULL
+		ORDER BY last_seen_at DESC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []UserSession
+	for rows.Next() {
+		var s UserSession
+		if err := rows.Scan(&s.ID, &s.UserID, &s.IPAddress, &s.UserAgent, &s.DeviceName, &s.CreatedAt, &s.LastSeenAt); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions, rows.Err()
+}
+
+func revokeUserSession(db *sql.DB, sessionID string, userID int64) error {
+	_, err := db.Exec(`
+		UPDATE user_sessions
+		SET revoked_at = ?
+		WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+	`, time.Now(), sessionID, userID)
+	return err
+}
+
+func revokeOtherUserSessions(db *sql.DB, currentSessionID string, userID int64) error {
+	_, err := db.Exec(`
+		UPDATE user_sessions
+		SET revoked_at = ?
+		WHERE user_id = ? AND id != ? AND revoked_at IS NULL
+	`, time.Now(), userID, currentSessionID)
+	return err
+}
+
+func revokeAllUserSessions(db *sql.DB, userID int64) error {
+	_, err := db.Exec(`
+		UPDATE user_sessions
+		SET revoked_at = ?
+		WHERE user_id = ? AND revoked_at IS NULL
+	`, time.Now(), userID)
 	return err
 }

@@ -138,6 +138,50 @@ func (a *App) getSession(r *http.Request) (*sessions.Session, error) {
 	return sess, err
 }
 
+func parseDeviceName(userAgent string) string {
+	ua := strings.ToLower(userAgent)
+	if strings.Contains(ua, "capacitor") || strings.Contains(ua, "io.ottie.den") || strings.Contains(ua, "ottie-mobile") {
+		if strings.Contains(ua, "android") {
+			return "Ottie Mobile Companion (Android)"
+		}
+		if strings.Contains(ua, "iphone") || strings.Contains(ua, "ipad") || strings.Contains(ua, "ios") {
+			return "Ottie Mobile Companion (iOS)"
+		}
+		return "Ottie Mobile Companion"
+	}
+
+	os := "Unknown OS"
+	if strings.Contains(ua, "windows") {
+		os = "Windows"
+	} else if strings.Contains(ua, "macintosh") || strings.Contains(ua, "mac os") {
+		os = "macOS"
+	} else if strings.Contains(ua, "iphone") {
+		os = "iPhone"
+	} else if strings.Contains(ua, "ipad") {
+		os = "iPad"
+	} else if strings.Contains(ua, "android") {
+		os = "Android"
+	} else if strings.Contains(ua, "linux") {
+		os = "Linux"
+	}
+
+	browser := "Browser"
+	if strings.Contains(ua, "edg/") {
+		browser = "Edge"
+	} else if strings.Contains(ua, "chrome/") || strings.Contains(ua, "crios/") {
+		browser = "Chrome"
+	} else if strings.Contains(ua, "firefox/") || strings.Contains(ua, "fxios/") {
+		browser = "Firefox"
+	} else if strings.Contains(ua, "safari/") && !strings.Contains(ua, "chrome") {
+		browser = "Safari"
+	}
+
+	if os == "iPhone" || os == "iPad" {
+		return fmt.Sprintf("%s (%s)", browser, os)
+	}
+	return fmt.Sprintf("%s on %s", browser, os)
+}
+
 func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 	sess, err := a.getSession(r)
 	if err != nil || sess == nil {
@@ -167,6 +211,19 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 	username, _ := sess.Values["username"].(string)
 	role, _ := sess.Values["role"].(string)
 	sid, _ := sess.Values["session_token"].(string)
+	if sid == "" {
+		return nil, errors.New("no session token")
+	}
+
+	ip := getClientIP(r)
+	ua := r.UserAgent()
+	valid, err := isSessionValid(a.db, sid, uid, ip, ua, parseDeviceName(ua))
+	if err != nil || !valid {
+		debugLog("[AUTH] Session invalid or revoked: User=%s(ID=%d), sid=%s, valid=%v, err=%v", username, uid, sid, valid, err)
+		a.dekStore.Delete(sid)
+		return nil, errors.New("session revoked")
+	}
+	go touchUserSession(a.db, sid, ip)
 
 	// Try in-memory store first
 	if sid != "" {
@@ -779,6 +836,10 @@ func (a *App) handleApiSetupConfirm(w http.ResponseWriter, r *http.Request) {
 	sess.Values["user_id"] = uid
 	sess.Values["username"] = "admin"
 	sess.Values["role"] = "admin"
+	ip := getClientIP(r)
+	ua := r.UserAgent()
+	deviceName := parseDeviceName(ua)
+	_ = createUserSession(a.db, sid, uid, ip, ua, deviceName)
 	sess.Values["session_token"] = sid
 	sess.Values["enc_dek"] = encCookieDEK
 	sess.Save(r, w)
@@ -882,6 +943,12 @@ func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	sess.Values["user_id"] = dbUser.ID
 	sess.Values["username"] = dbUser.Username
 	sess.Values["role"] = dbUser.Role
+	ip := getClientIP(r)
+	ua := r.UserAgent()
+	deviceName := parseDeviceName(ua)
+	if err := createUserSession(a.db, sid, dbUser.ID, ip, ua, deviceName); err != nil {
+		log.Printf("[SESSION ERROR] Failed to record user session: %v", err)
+	}
 	sess.Values["session_token"] = sid
 	sess.Values["enc_dek"] = encCookieDEK
 	if err := sess.Save(r, w); err != nil {
@@ -966,6 +1033,10 @@ func (a *App) handleApiAuthVerify2FA(w http.ResponseWriter, r *http.Request) {
 	sess.Values["user_id"] = pendingID
 	sess.Values["username"] = username
 	sess.Values["role"] = role
+	ip := getClientIP(r)
+	ua := r.UserAgent()
+	deviceName := parseDeviceName(ua)
+	_ = createUserSession(a.db, sid, pendingID, ip, ua, deviceName)
 	sess.Values["session_token"] = sid
 	sess.Values["enc_dek"] = encCookieDEK
 	sess.Save(r, w)
@@ -1045,6 +1116,10 @@ func (a *App) handleApiAuthVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	sess.Values["user_id"] = pendingID
 	sess.Values["username"] = username
 	sess.Values["role"] = role
+	ip := getClientIP(r)
+	ua := r.UserAgent()
+	deviceName := parseDeviceName(ua)
+	_ = createUserSession(a.db, sid, pendingID, ip, ua, deviceName)
 	sess.Values["session_token"] = sid
 	sess.Values["enc_dek"] = encCookieDEK
 	sess.Save(r, w)
@@ -1556,6 +1631,96 @@ func (a *App) handleApiAdminUsersDelete(w http.ResponseWriter, r *http.Request) 
 
 	if err := deleteUser(a.db, idInt); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "Failed to delete user.")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+	})
+}
+
+// --- Active Session Management Endpoints ---
+
+func (a *App) handleApiSessions(w http.ResponseWriter, r *http.Request) {
+	user, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	sess, _ := a.getSession(r)
+	currentSID, _ := sess.Values["session_token"].(string)
+
+	activeSessions, err := getUserActiveSessions(a.db, user.ID); if err != nil { log.Printf("[SESSIONS ERROR] %v", err) }
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to load active sessions")
+		return
+	}
+
+	for i := range activeSessions {
+		if activeSessions[i].ID == currentSID {
+			activeSessions[i].IsCurrent = true
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":  true,
+		"sessions": activeSessions,
+	})
+}
+
+func (a *App) handleApiSessionRevoke(w http.ResponseWriter, r *http.Request) {
+	user, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	var req struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID")
+		return
+	}
+
+	if err := revokeUserSession(a.db, req.SessionID, user.ID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to revoke session")
+		return
+	}
+
+	a.dekStore.Delete(req.SessionID)
+
+	sess, _ := a.getSession(r)
+	currentSID, _ := sess.Values["session_token"].(string)
+	isCurrent := req.SessionID == currentSID
+	if isCurrent {
+		sess.Options.MaxAge = -1
+		sess.Save(r, w)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":   true,
+		"isCurrent": isCurrent,
+	})
+}
+
+func (a *App) handleApiSessionsRevokeOthers(w http.ResponseWriter, r *http.Request) {
+	user, err := a.getSessionUser(r)
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	sess, _ := a.getSession(r)
+	currentSID, _ := sess.Values["session_token"].(string)
+	if currentSID == "" {
+		writeJSONError(w, http.StatusBadRequest, "No active session token")
+		return
+	}
+
+	if err := revokeOtherUserSessions(a.db, currentSID, user.ID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to revoke other sessions")
 		return
 	}
 

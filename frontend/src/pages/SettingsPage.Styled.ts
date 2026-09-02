@@ -157,6 +157,108 @@ const ThemeActiveCircle = styled.div`
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.12);
 `;
 
+
+const SessionList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+`;
+
+const SessionCard = styled.div<{ isCurrent?: boolean }>`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: ${({ isCurrent }) => (isCurrent ? "rgba(5, 150, 105, 0.04)" : "#ffffff")};
+  border: 1.5px solid ${({ theme, isCurrent }) => (isCurrent ? theme.colors.primary : "#e2e8f0")};
+  border-radius: ${({ theme }) => theme.radii.md};
+  transition: all 0.15s ease;
+
+  &:hover {
+    border-color: ${({ theme }) => theme.colors.primary};
+  }
+`;
+
+const SessionInfo = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 14px;
+`;
+
+const SessionIconBox = styled.div<{ isCurrent?: boolean }>`
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: ${({ theme, isCurrent }) => (isCurrent ? theme.colors.primaryLight : "#f1f5f9")};
+  color: ${({ theme, isCurrent }) => (isCurrent ? theme.colors.primary : "#64748b")};
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+`;
+
+const SessionDetails = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+`;
+
+const SessionDeviceName = styled.div`
+  font-size: 14px;
+  font-weight: 700;
+  color: ${({ theme }) => theme.colors.textDark};
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const CurrentBadge = styled.span`
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: ${({ theme }) => theme.colors.primaryLight};
+  color: ${({ theme }) => theme.colors.primary};
+`;
+
+const SessionMeta = styled.div`
+  font-size: 12px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const SessionActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`;
+
+const RevokeBtn = styled.button`
+  background: #fee2e2;
+  color: #dc2626;
+  border: none;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+
+  &:hover {
+    background: #fecaca;
+    transform: translateY(-1px);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+`;
+
 export const Styled = {
   BackNav,
   BackBtn,
@@ -175,4 +277,14 @@ export const Styled = {
   ThemeOptionTitle,
   ThemeOptionSub,
   ThemeActiveCircle,
+  SessionList,
+  SessionCard,
+  SessionInfo,
+  SessionIconBox,
+  SessionDetails,
+  SessionDeviceName,
+  CurrentBadge,
+  SessionMeta,
+  SessionActions,
+  RevokeBtn,
 };

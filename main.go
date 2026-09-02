@@ -234,6 +234,9 @@ func main() {
 	mux.HandleFunc("POST /api/settings/otp", app.handleApiSettingsOTP)
 	mux.HandleFunc("POST /api/settings/recovery/regenerate", app.handleApiSettingsRecoveryRegenerate)
 	mux.HandleFunc("POST /api/settings/export", app.handleExportVault)
+	mux.HandleFunc("GET /api/sessions", app.handleApiSessions)
+	mux.HandleFunc("POST /api/sessions/revoke", app.handleApiSessionRevoke)
+	mux.HandleFunc("POST /api/sessions/revoke-others", app.handleApiSessionsRevokeOthers)
 	mux.HandleFunc("GET /api/admin/users", app.handleApiAdminUsers)
 	mux.HandleFunc("POST /api/admin/users/create", app.handleApiAdminUsersCreate)
 	mux.HandleFunc("POST /api/admin/users/delete", app.handleApiAdminUsersDelete)
@@ -335,6 +338,6 @@ func main() {
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
-	log.Printf("🦦 Ottie v%s is swimming at http://%s", Version, addr)
+	log.Printf("ðŸ¦¦ Ottie v%s is swimming at http://%s", Version, addr)
 	log.Fatal(http.ListenAndServe(addr, securityHeaders(mux, secureCookie)))
 }

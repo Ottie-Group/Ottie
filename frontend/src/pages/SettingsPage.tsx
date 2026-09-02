@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAuthStore } from '../store/useAuthStore';
@@ -11,6 +11,27 @@ import { CustomSelect, SelectOption } from '../components/common/CustomSelect';
 import { AppWrapper, FormCard, FormHeader } from '../components/layout/AppWrapper';
 import { Styled } from './SettingsPage.Styled';
 
+
+interface UserSession {
+  id: string;
+  userId: number;
+  ipAddress: string;
+  userAgent: string;
+  deviceName: string;
+  createdAt: string;
+  lastSeenAt: string;
+  isCurrent?: boolean;
+}
+
+function formatRelativeTime(dateStr: string): string {
+  if (!dateStr) return 'Just now';
+  const diffSec = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (diffSec < 60) return 'Active now';
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  return `${Math.floor(diffSec / 86400)}d ago`;
+}
+
 export function SettingsPage() {
   const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
@@ -18,8 +39,71 @@ export function SettingsPage() {
   const fetchSession = useAuthStore((state) => state.fetchSession);
   const showToast = useToastStore((state) => state.showToast);
 
+  // Theme state
   const themeName = useThemeStore((state) => state.themeName);
   const setTheme = useThemeStore((state) => state.setTheme);
+
+  // Active Sessions state
+  const [sessions, setSessions] = useState<UserSession[]>([]);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(true);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [isRevokingOthers, setIsRevokingOthers] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    api.get<{ success: boolean; sessions: UserSession[] }>('/api/sessions')
+      .then((res) => {
+        if (isMounted && res.success && res.sessions) {
+          setSessions(res.sessions);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load active sessions:', err);
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsLoadingSessions(false);
+        }
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleRevokeSession = async (sessionId: string) => {
+    try {
+      setRevokingId(sessionId);
+      const res = await api.post<{ success: boolean; isCurrent?: boolean }>('/api/sessions/revoke', { sessionId });
+      if (res.isCurrent) {
+        showToast('Session ended. Logging out...');
+        navigate('/login');
+        return;
+      }
+      showToast('Session revoked successfully.');
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    } catch (err: any) {
+      showToast(err.message || 'Failed to revoke session.');
+    } finally {
+      setRevokingId(null);
+    }
+  };
+
+  const handleRevokeOthers = async () => {
+    if (!window.confirm('Are you sure you want to sign out all other devices?')) {
+      return;
+    }
+    try {
+      setIsRevokingOthers(true);
+      await api.post('/api/sessions/revoke-others', {});
+      showToast('All other devices have been signed out.');
+      setSessions((prev) => prev.filter((s) => s.isCurrent));
+    } catch (err: any) {
+      showToast(err.message || 'Failed to sign out other sessions.');
+    } finally {
+      setIsRevokingOthers(false);
+    }
+  };
+
 
   // Password state
   const [currentPassword, setCurrentPassword] = useState('');
@@ -416,6 +500,72 @@ export function SettingsPage() {
             </Styled.ThemeOptionCard>
           </Styled.ThemeGrid>
         </div>
+        <Styled.SectionDivider />
+
+        {/* Active Sessions */}
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+            <div>
+              <Styled.SectionTitle>Active Sessions</Styled.SectionTitle>
+              <Styled.SectionDesc>
+                Manage all devices and browsers currently signed into your den. You can terminate any unrecognized or remote session.
+              </Styled.SectionDesc>
+            </div>
+            {sessions.filter((s) => !s.isCurrent).length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRevokeOthers}
+                disabled={isRevokingOthers}
+              >
+                {isRevokingOthers ? 'Signing Out...' : 'Sign Out Other Devices'}
+              </Button>
+            )}
+          </div>
+
+          {isLoadingSessions && sessions.length === 0 ? (
+            <div style={{ padding: '16px 0', fontSize: '13px', color: '#64748b' }}>Checking active sessions...</div>
+          ) : (
+            <Styled.SessionList>
+              {sessions.map((sess) => (
+                <Styled.SessionCard key={sess.id} isCurrent={sess.isCurrent}>
+                  <Styled.SessionInfo>
+                    <Styled.SessionIconBox isCurrent={sess.isCurrent}>
+                      {sess.deviceName.toLowerCase().includes('mobile') ||
+                      sess.deviceName.toLowerCase().includes('android') ||
+                      sess.deviceName.toLowerCase().includes('iphone')
+                        ? '📱'
+                        : '💻'}
+                    </Styled.SessionIconBox>
+                    <Styled.SessionDetails>
+                      <Styled.SessionDeviceName>
+                        {sess.deviceName}
+                        {sess.isCurrent && <Styled.CurrentBadge>This Device</Styled.CurrentBadge>}
+                      </Styled.SessionDeviceName>
+                      <Styled.SessionMeta>
+                        <span>IP: {sess.ipAddress || 'Local'}</span>
+                        <span>•</span>
+                        <span>{sess.isCurrent ? 'Active now' : `Last active: ${formatRelativeTime(sess.lastSeenAt)}`}</span>
+                      </Styled.SessionMeta>
+                    </Styled.SessionDetails>
+                  </Styled.SessionInfo>
+
+                  {!sess.isCurrent && (
+                    <Styled.SessionActions>
+                      <Styled.RevokeBtn
+                        onClick={() => handleRevokeSession(sess.id)}
+                        disabled={revokingId === sess.id}
+                      >
+                        {revokingId === sess.id ? 'Ending...' : 'Revoke'}
+                      </Styled.RevokeBtn>
+                    </Styled.SessionActions>
+                  )}
+                </Styled.SessionCard>
+              ))}
+            </Styled.SessionList>
+          )}
+        </div>
+
       </FormCard>
     </AppWrapper>
   );
