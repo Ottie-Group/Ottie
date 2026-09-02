@@ -17,7 +17,7 @@ import (
 )
 
 // Version of Ottie (can be set at build time via -ldflags "-X main.Version=...")
-var Version = "1.0.0"
+var Version = "1.0.2"
 
 //go:embed static/* frontend/dist/*
 var embeddedFS embed.FS
@@ -38,14 +38,12 @@ func securityHeaders(next http.Handler, secureCookie bool) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';")
-		h.Set("Cross-Origin-Resource-Policy", "same-origin")
 		h.Set("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
 
-		// Only emit HSTS and COOP when on a secure origin (HTTPS / TLS or behind an HTTPS reverse proxy)
+		// Only emit HSTS when on a secure origin (HTTPS / TLS or behind an HTTPS reverse proxy)
 		isHTTPS := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") || secureCookie
 		if isHTTPS {
 			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
-			h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		}
 
 		// Protect mutating API endpoints against CSRF and cross-origin attacks

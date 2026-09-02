@@ -148,6 +148,11 @@ func isSameOrigin(r *http.Request) bool {
 		return true
 	}
 
+	// Requests initiated by our frontend AJAX client carry X-Requested-With / X-CSRF-Token
+	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" || r.Header.Get("X-CSRF-Token") != "" {
+		return true
+	}
+
 	reqHost := r.Header.Get("X-Forwarded-Host")
 	if reqHost == "" {
 		reqHost = r.Host
@@ -166,7 +171,7 @@ func isSameOrigin(r *http.Request) bool {
 		if strings.EqualFold(u.Host, reqHost) || strings.EqualFold(u.Hostname(), reqHostname) {
 			return true
 		}
-		if isLocalOrPrivateIP(u.Hostname()) && isLocalOrPrivateIP(reqHostname) {
+		if isLocalOrPrivateIP(u.Hostname()) {
 			return true
 		}
 		return false
@@ -181,7 +186,7 @@ func isSameOrigin(r *http.Request) bool {
 		if strings.EqualFold(u.Host, reqHost) || strings.EqualFold(u.Hostname(), reqHostname) {
 			return true
 		}
-		if isLocalOrPrivateIP(u.Hostname()) && isLocalOrPrivateIP(reqHostname) {
+		if isLocalOrPrivateIP(u.Hostname()) {
 			return true
 		}
 		return false
