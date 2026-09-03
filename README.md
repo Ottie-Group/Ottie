@@ -94,23 +94,6 @@ Access the UI at `http://localhost:8080`. The SQLite database is safely persiste
 
 ---
 
-## Security & Zero-Knowledge Architecture
-
-```
-User Password â”€â”€(Argon2id)â”€â”€â–º User KEK (Key Encryption Key)
-                                 â”‚
-                 â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-                 â–¼                               â–¼
-       Wrapped DEK at rest            User Active Session DEK
-     (Stored in SQLite users)            (In-memory only)
-                                                 â”‚
-                                                 â–¼
-                                     AES-256-GCM Decryption
-                                                 â”‚
-                                                 â–¼
-                                       Live 6-Digit TOTP Code
-```
-
 - **Data Privacy**: If the server or SQLite database file (`ottie.db`) is leaked or inspected, all TOTP secrets remain encrypted with individual user DEKs that require the respective user's password to unwrap.
 - **Admin Isolation**: Admins can manage account lifecycles (create, list, delete) but cannot read or decrypt any user's TOTP seeds.
 - **Brute-Force Lockout**: IP-based rate limiting blocks repeated failed login attempts.
