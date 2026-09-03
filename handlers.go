@@ -138,16 +138,30 @@ func (a *App) getSession(r *http.Request) (*sessions.Session, error) {
 	return sess, err
 }
 
-func parseDeviceName(userAgent string) string {
-	ua := strings.ToLower(userAgent)
-	if strings.Contains(ua, "capacitor") || strings.Contains(ua, "io.ottie.den") || strings.Contains(ua, "ottie-mobile") {
-		if strings.Contains(ua, "android") {
-			return "Ottie Mobile Companion (Android)"
+func parseDeviceName(r *http.Request) string {
+	client := r.Header.Get("X-Ottie-Client")
+	platform := r.Header.Get("X-Ottie-Platform")
+	device := r.Header.Get("X-Ottie-Device-Name")
+	ua := strings.ToLower(r.UserAgent())
+
+	isCompanion := strings.EqualFold(client, "companion") ||
+		strings.EqualFold(client, "mobile-app") ||
+		strings.Contains(ua, "ottiecompanion") ||
+		strings.Contains(ua, "io.ottie.den") ||
+		strings.Contains(ua, "capacitor") ||
+		strings.Contains(ua, "ottie-mobile")
+
+	if isCompanion {
+		if device != "" {
+			return fmt.Sprintf("Ottie Companion (%s)", device)
 		}
-		if strings.Contains(ua, "iphone") || strings.Contains(ua, "ipad") || strings.Contains(ua, "ios") {
-			return "Ottie Mobile Companion (iOS)"
+		if strings.EqualFold(platform, "android") || strings.Contains(ua, "android") {
+			return "Ottie Companion (Android)"
 		}
-		return "Ottie Mobile Companion"
+		if strings.EqualFold(platform, "ios") || strings.Contains(ua, "iphone") || strings.Contains(ua, "ipad") {
+			return "Ottie Companion (iOS)"
+		}
+		return "Ottie Companion"
 	}
 
 	os := "Unknown OS"
@@ -217,7 +231,7 @@ func (a *App) getSessionUser(r *http.Request) (*SessionUser, error) {
 
 	ip := getClientIP(r)
 	ua := r.UserAgent()
-	valid, err := isSessionValid(a.db, sid, uid, ip, ua, parseDeviceName(ua))
+	valid, err := isSessionValid(a.db, sid, uid, ip, ua, parseDeviceName(r))
 	if err != nil || !valid {
 		debugLog("[AUTH] Session invalid or revoked: User=%s(ID=%d), sid=%s, valid=%v, err=%v", username, uid, sid, valid, err)
 		a.dekStore.Delete(sid)
@@ -838,7 +852,7 @@ func (a *App) handleApiSetupConfirm(w http.ResponseWriter, r *http.Request) {
 	sess.Values["role"] = "admin"
 	ip := getClientIP(r)
 	ua := r.UserAgent()
-	deviceName := parseDeviceName(ua)
+	deviceName := parseDeviceName(r)
 	_ = createUserSession(a.db, sid, uid, ip, ua, deviceName)
 	sess.Values["session_token"] = sid
 	sess.Values["enc_dek"] = encCookieDEK
@@ -945,7 +959,7 @@ func (a *App) handleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	sess.Values["role"] = dbUser.Role
 	ip := getClientIP(r)
 	ua := r.UserAgent()
-	deviceName := parseDeviceName(ua)
+	deviceName := parseDeviceName(r)
 	if err := createUserSession(a.db, sid, dbUser.ID, ip, ua, deviceName); err != nil {
 		log.Printf("[SESSION ERROR] Failed to record user session: %v", err)
 	}
@@ -1035,7 +1049,7 @@ func (a *App) handleApiAuthVerify2FA(w http.ResponseWriter, r *http.Request) {
 	sess.Values["role"] = role
 	ip := getClientIP(r)
 	ua := r.UserAgent()
-	deviceName := parseDeviceName(ua)
+	deviceName := parseDeviceName(r)
 	_ = createUserSession(a.db, sid, pendingID, ip, ua, deviceName)
 	sess.Values["session_token"] = sid
 	sess.Values["enc_dek"] = encCookieDEK
@@ -1118,7 +1132,7 @@ func (a *App) handleApiAuthVerifyOTP(w http.ResponseWriter, r *http.Request) {
 	sess.Values["role"] = role
 	ip := getClientIP(r)
 	ua := r.UserAgent()
-	deviceName := parseDeviceName(ua)
+	deviceName := parseDeviceName(r)
 	_ = createUserSession(a.db, sid, pendingID, ip, ua, deviceName)
 	sess.Values["session_token"] = sid
 	sess.Values["enc_dek"] = encCookieDEK

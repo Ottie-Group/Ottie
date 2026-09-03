@@ -148,8 +148,8 @@ func isSameOrigin(r *http.Request) bool {
 		return true
 	}
 
-	// Requests initiated by our frontend AJAX client carry X-Requested-With / X-CSRF-Token
-	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" || r.Header.Get("X-CSRF-Token") != "" {
+	// Requests initiated by our frontend AJAX client or mobile companion carry custom headers
+	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" || r.Header.Get("X-CSRF-Token") != "" || r.Header.Get("X-Ottie-Client") != "" {
 		return true
 	}
 
