@@ -40,7 +40,9 @@ func TestSessionManagement(t *testing.T) {
 
 	// 2. Second login (Session B - mobile)
 	reqLoginB := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(loginBytes))
-	reqLoginB.Header.Set("User-Agent", "Ottie-Mobile/1.0.0 Android Capacitor")
+	reqLoginB.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36")
+	reqLoginB.Header.Set("X-Ottie-Client", "companion")
+	reqLoginB.Header.Set("X-Ottie-Platform", "android")
 	recLoginB := httptest.NewRecorder()
 	app.handleApiAuthLogin(recLoginB, reqLoginB)
 
@@ -75,6 +77,9 @@ func TestSessionManagement(t *testing.T) {
 			sessionA_isCurrent = true
 		} else {
 			sessionB_ID = s.ID
+			if s.DeviceName != "Ottie Companion (Android)" {
+				t.Fatalf("expected device name 'Ottie Companion (Android)', got %q", s.DeviceName)
+			}
 		}
 	}
 	if !sessionA_isCurrent {
