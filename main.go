@@ -338,6 +338,6 @@ func main() {
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
-	log.Printf("ðŸ¦¦ Ottie v%s is swimming at http://%s", Version, addr)
+	log.Printf("Ottie v%s is swimming at http://%s", Version, addr)
 	log.Fatal(http.ListenAndServe(addr, securityHeaders(mux, secureCookie)))
 }
